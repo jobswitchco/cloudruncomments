@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const axios = require("axios");
 const Automation = require("./models/Automation.js");
 const RepliedComment = require("./models/RepliedComment.js");
-const  User = require("./models/User.js");        // 👈 add this
+const User = require("./models/User.js");        // 👈 add this
 
 
 
@@ -35,7 +35,7 @@ const connectMongo = async () => {
 };
 
 // --- Extract comment events ---
-function extractCommentEvents(envelope) {
+async function extractCommentEvents(envelope) {
   const events = [];
 
   const entries = envelope?.body?.entry || [];
@@ -116,7 +116,9 @@ app.post("/pubsub", async (req, res) => {
   }
 
   await connectMongo();
-  const commentEvents = extractCommentEvents(envelope);
+  const commentEvents = await extractCommentEvents(envelope);
+
+  console.log('pubsub entered : ', commentEvents);
 
   for (const c of commentEvents) {
     console.log("💬 Comment received:", c.text);
@@ -127,6 +129,8 @@ app.post("/pubsub", async (req, res) => {
       postId: c.mediaId,
       status: "active",
     });
+
+    console.log('MYDYYDYD Automations ::::::', automations);
 
     if (!automations?.length) {
       console.log("No active automation for post", c.mediaId);
