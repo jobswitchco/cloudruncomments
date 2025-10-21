@@ -3,12 +3,16 @@ import mongoose from "mongoose";
 import axios from "axios";
 import Automation from "./models/Automation.js";
 import RepliedComment from "./models/RepliedComment.js";
+import User from "./models/User.js";        // 👈 add this
 
-const username = 'jobswitchco';
-const password = '1q2unIeMxwn9IpUB';
-
-var MONGO_URI = 'mongodb+srv://'+username+':'+password+'@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob';
-
+const username = "jobswitchco";
+const password = "1q2unIeMxwn9IpUB";
+const MONGO_URI =
+  "mongodb+srv://" +
+  username +
+  ":" +
+  password +
+  "@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -24,7 +28,7 @@ const connectMongo = async () => {
   }
 };
 
-// --- Utility: extract comment events ---
+// --- Extract comment events ---
 function extractCommentEvents(envelope) {
   const events = [];
   const entries = envelope?.body?.entry || [];
@@ -64,7 +68,11 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
     console.log("✅ Replied to comment", commentId, res.data);
     return res.data;
   } catch (err) {
-    console.error("❌ IG reply failed", commentId, err.response?.data || err.message);
+    console.error(
+      "❌ IG reply failed",
+      commentId,
+      err.response?.data || err.message
+    );
     throw err;
   }
 }
@@ -72,10 +80,7 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
 // --- Pub/Sub push handler ---
 app.post("/pubsub", async (req, res) => {
   const msg = req.body?.message;
-  if (!msg || !msg.data) {
-    console.warn("⚠️ No Pub/Sub message");
-    return res.status(204).send();
-  }
+  if (!msg || !msg.data) return res.status(204).send();
 
   let envelope;
   try {
@@ -92,7 +97,7 @@ app.post("/pubsub", async (req, res) => {
   for (const c of commentEvents) {
     console.log("💬 Comment received:", c.text);
 
-    // 1️⃣ find matching automation
+    // 1️⃣ find matching automation(s)
     const automations = await Automation.find({
       platform: "instagram",
       postId: c.mediaId,
@@ -104,7 +109,7 @@ app.post("/pubsub", async (req, res) => {
       continue;
     }
 
-    // 2️⃣ check keywords
+    // 2️⃣ iterate each matching automation
     for (const auto of automations) {
       const matched = auto.keywords.some((kw) =>
         c.text.includes(kw.toLowerCase())
@@ -121,26 +126,25 @@ app.post("/pubsub", async (req, res) => {
         continue;
       }
 
-      // 4️⃣ post public reply (using stored access token per user)
-      // you’ll need to store each user’s pageAccessToken in user doc or automation
-      const accessToken = process.env.PAGE_ACCESS_TOKEN; // temp global token
+      // 4️⃣ get the user's access token from User collection
+      const user = await User.findById(auto.userId);
+      const accessToken = user?.fbPageAccessToken;
       if (!accessToken) {
-        console.warn("⚠️ No PAGE_ACCESS_TOKEN set");
+        console.warn("⚠️ No access token found for user", auto.userId);
         continue;
       }
 
+      // 5️⃣ send public reply if configured
       if (auto.hasPublicReply && auto.publicReply) {
         try {
           await replyToComment(c.commentId, auto.publicReply, accessToken);
 
-          // 5️⃣ record reply
           await RepliedComment.create({
             commentId: c.commentId,
             automationId: auto._id,
             text: c.text,
           });
 
-          // increment stats
           await Automation.updateOne(
             { _id: auto._id },
             {
@@ -150,7 +154,7 @@ app.post("/pubsub", async (req, res) => {
           );
 
           console.log(
-            `✅ Sent public reply for keyword match "${auto.keywords.join(", ")}"`
+            `✅ Sent reply for keyword match "${auto.keywords.join(", ")}"`
           );
         } catch (err) {
           console.error("Reply failed", err.message);
