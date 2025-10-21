@@ -129,7 +129,7 @@ app.post("/pubsub", async (req, res) => {
 
         // 📨 Send DM if enabled
         if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
-          await sendInstagramDM(c.pageId, c.fromUserId, auto.dm.message, accessToken);
+          await sendInstagramDM(c.igId, c.fromUserId, auto.dm.message, accessToken);
           await Automation.updateOne(
             { _id: auto._id },
             { $inc: { "runStats.dmsSent": 1 } }
