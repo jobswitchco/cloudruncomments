@@ -31,30 +31,60 @@ const connectMongo = async () => {
 // --- Extract comment events ---
 function extractCommentEvents(envelope) {
   const events = [];
+
   const entries = envelope?.body?.entry || [];
   for (const entry of entries) {
     const changes = entry?.changes || [];
     for (const ch of changes) {
       const v = ch?.value || {};
-      if (v.comment_id || v.text || v.media_id) {
-        events.push({
-          eventId:
-            envelope?.headers?.["X-Hub-Delivery"] ||
-            v.id ||
-            v.comment_id,
-          pageId: entry?.id,
-          mediaId: v.media_id || v.media?.id,
-          commentId: v.comment_id,
-          text: v.text?.toLowerCase() || "",
-          fromUserId: v.from?.id,
-          fromUsername: v.from?.username,
-          timestamp: v.timestamp || v.time,
-        });
-      }
+
+      // Defensive fallback: some payloads have nested structures
+      const commentId =
+        v.comment_id ||
+        v.id ||
+        v.comment?.id ||
+        v.media?.comment_id ||
+        v.media_comment_id ||
+        v.parent_id;
+
+      const mediaId =
+        v.media_id ||
+        v.media?.id ||
+        v.photo_id ||
+        v.video_id ||
+        v.post_id;
+
+      const timestamp =
+        v.timestamp ||
+        v.time ||
+        v.created_time ||
+        v.comment_time ||
+        null;
+
+      const text =
+        v.text ||
+        v.message ||
+        v.body ||
+        v.caption ||
+        "";
+
+      events.push({
+        eventId:
+          envelope?.headers?.["X-Hub-Delivery"] || commentId || Math.random().toString(36),
+        pageId: entry?.id,
+        mediaId,
+        commentId,
+        text: text.toLowerCase(),
+        fromUserId: v.from?.id || v.username || v.user_id,
+        fromUsername: v.from?.username || v.username || "",
+        timestamp,
+      });
     }
   }
+
   return events;
 }
+
 
 // --- IG public reply helper ---
 async function replyToComment(commentId, replyText, pageAccessToken) {
