@@ -1,12 +1,9 @@
-const express = require("express");
-
-const mongoose = require("mongoose");
-const axios = require("axios");
-const Automation = require("./models/Automation.js");
-const RepliedComment = require("./models/RepliedComment.js");
-const User = require("./models/User.js");        // 👈 add this
-
-
+import express from "express";
+import mongoose from "mongoose";
+import axios from "axios";
+import Automation from "./models/Automation.js";
+import RepliedComment from "./models/RepliedComment.js";
+import User from "./models/User.js";
 
 
 // Accept Pub/Sub push JSON (it posts with content-type: application/json)
