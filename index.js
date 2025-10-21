@@ -77,7 +77,13 @@ function extractCommentEvents(envelope) {
 // --- IG public reply helper ---
 async function replyToComment(commentId, replyText, pageAccessToken) {
   try {
-    const url = `https://graph.facebook.com/v20.0/${commentId}/replies`;
+
+    console.log('I am kuthac chimpesstha');
+
+    console.log('commentId-> : ', commentId);
+    console.log('replyText-> : ', replyText);
+    console.log('pageAccessToken-> : ', pageAccessToken);
+    const url = `https://graph.facebook.com/v24.0/${commentId}/replies`;
     const res = await axios.post(
       url,
       { message: replyText },
