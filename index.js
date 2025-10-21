@@ -40,56 +40,38 @@ function extractCommentEvents(envelope) {
 
   const entries = envelope?.body?.entry || [];
   for (const entry of entries) {
+    const entryTime = entry?.time || null;
     const changes = entry?.changes || [];
+
     for (const ch of changes) {
       const v = ch?.value || {};
 
-      // Defensive fallback: some payloads have nested structures
-      const commentId =
-        v.comment_id ||
-        v.id ||
-        v.comment?.id ||
-        v.media?.comment_id ||
-        v.media_comment_id ||
-        v.parent_id;
-
-      const mediaId =
-        v.media_id ||
-        v.media?.id ||
-        v.photo_id ||
-        v.video_id ||
-        v.post_id;
-
-      const timestamp =
-        v.timestamp ||
-        v.time ||
-        v.created_time ||
-        v.comment_time ||
-        null;
-
-      const text =
-        v.text ||
-        v.message ||
-        v.body ||
-        v.caption ||
-        "";
+      // In your payload: value.id = comment_id, value.media.id = media_id
+      const commentId = v.id;
+      const mediaId = v.media?.id;
+      const text = v.text || "";
+      const fromUserId = v.from?.id;
+      const fromUsername = v.from?.username;
 
       events.push({
         eventId:
-          envelope?.headers?.["X-Hub-Delivery"] || commentId || Math.random().toString(36),
-        pageId: entry?.id,
+          envelope?.headers?.["X-Hub-Delivery"] ||
+          commentId ||
+          Math.random().toString(36),
+        pageId: entry?.id, // IG business account ID
         mediaId,
         commentId,
         text: text.toLowerCase(),
-        fromUserId: v.from?.id || v.username || v.user_id,
-        fromUsername: v.from?.username || v.username || "",
-        timestamp,
+        fromUserId,
+        fromUsername,
+        timestamp: v.timestamp || entryTime || Date.now(),
       });
     }
   }
 
   return events;
 }
+
 
 
 // --- IG public reply helper ---
