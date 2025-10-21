@@ -91,6 +91,7 @@ app.post("/pubsub", async (req, res) => {
 
   await connectMongo();
   const commentEvents = await extractCommentEvents(envelope);
+  console.log('comments events::::::::::::::::', commentEvents);
 
   for (const c of commentEvents) {
     const automations = await Automation.find({
