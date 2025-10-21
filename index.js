@@ -91,7 +91,6 @@ app.post("/pubsub", async (req, res) => {
 
   await connectMongo();
   const commentEvents = await extractCommentEvents(envelope);
-  console.log('comments events::::::::::::::::', commentEvents);
 
   for (const c of commentEvents) {
     const automations = await Automation.find({
@@ -129,13 +128,21 @@ app.post("/pubsub", async (req, res) => {
         );
 
         // 📨 Send DM if enabled
-        if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
-          await sendInstagramDM(c.igId, c.fromUserId, auto.dm.message, accessToken);
-          await Automation.updateOne(
-            { _id: auto._id },
-            { $inc: { "runStats.dmsSent": 1 } }
-          );
-        }
+      // 📨 Send DM if enabled
+if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
+  const fbPageId = user?.fbPageId; // ✅ get pageId from user collection
+  if (!fbPageId) {
+    console.warn("⚠️ Missing fbPageId for user", user?._id);
+  } else {
+    console.log(`➡️ Sending DM to ${c.fromUsername} (${c.fromUserId}) via Page ${fbPageId}`);
+    await sendInstagramDM(fbPageId, c.fromUserId, auto.dm.message, accessToken);
+    await Automation.updateOne(
+      { _id: auto._id },
+      { $inc: { "runStats.dmsSent": 1 } }
+    );
+  }
+}
+
       }
     }
   }
