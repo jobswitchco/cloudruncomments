@@ -64,7 +64,7 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
 // --- DM helper ---
 async function sendInstagramDM(pageId, userId, message, pageAccessToken) {
   try {
-    const url = `https://graph.facebook.com/v20.0/${pageId}/messages`;
+    const url = `https://graph.facebook.com/v24.0/${pageId}/messages`;
     const payload = { recipient: { id: userId }, message: { text: message } };
     const res = await axios.post(url, payload, {
       headers: { Authorization: `Bearer ${pageAccessToken}` },
@@ -128,21 +128,13 @@ app.post("/pubsub", async (req, res) => {
         );
 
         // 📨 Send DM if enabled
-      // 📨 Send DM if enabled
-if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
-  const fbPageId = user?.fbPageId; // ✅ get pageId from user collection
-  if (!fbPageId) {
-    console.warn("⚠️ Missing fbPageId for user", user?._id);
-  } else {
-    console.log(`➡️ Sending DM to ${c.fromUsername} (${c.fromUserId}) via Page ${fbPageId}`);
-    await sendInstagramDM(fbPageId, c.fromUserId, auto.dm.message, accessToken);
-    await Automation.updateOne(
-      { _id: auto._id },
-      { $inc: { "runStats.dmsSent": 1 } }
-    );
-  }
-}
-
+        if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
+          await sendInstagramDM(user.fbPageId, c.fromUserId, auto.dm.message, accessToken);
+          await Automation.updateOne(
+            { _id: auto._id },
+            { $inc: { "runStats.dmsSent": 1 } }
+          );
+        }
       }
     }
   }
