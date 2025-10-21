@@ -194,5 +194,5 @@ app.post("/pubsub", async (req, res) => {
 // --- Health check ---
 app.get("/", (_req, res) => res.status(200).send("ok"));
 
-const PORT = process.env.PORT || 8080;
+const PORT = 8080;
 app.listen(PORT, () => console.log(`🚀 Worker listening on ${PORT}`));
