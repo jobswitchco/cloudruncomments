@@ -78,50 +78,63 @@ function normalize(str = "") {
 // Extract Instagram comment events (kept similar to your version)
 async function extractCommentEvents(envelope) {
   const events = [];
-  const entries = envelope?.body?.entry || [];
 
+  const entries = envelope?.body?.entry || [];
   for (const entry of entries) {
     const entryTime = entry?.time || null;
     const changes = entry?.changes || [];
 
     for (const ch of changes) {
       const v = ch?.value || {};
-      // Only process comments
-      // (optionally gate by field/type if your webhook sends many types)
-      const isComment = !!v?.text && !!v?.id;
-      if (!isComment) continue;
+
+      const commentId = v.id;
+      const mediaId = v.media?.id;
+      const text = v.text || "";
+      const fromUserId = v.from?.id;
+      const fromUsername = v.from?.username;
 
       events.push({
-        eventId: envelope?.headers?.["X-Hub-Delivery"] || v.id || Math.random().toString(36),
+        eventId:
+          envelope?.headers?.["X-Hub-Delivery"] ||
+          commentId ||
+          Math.random().toString(36),
         pageId: entry?.id,
-        mediaId: v.media?.id,
-        commentId: v.id,
-        text: normalize(v.text),
-        fromUserId: v.from?.id,
-        fromUsername: v.from?.username,
+        mediaId,
+        commentId,
+        text: text.toLowerCase(),
+        fromUserId,
+        fromUsername,
         timestamp: v.timestamp || entryTime || Date.now(),
       });
     }
   }
+
   return events;
 }
 
-// ---------- Graph helpers ----------
-async function replyToCommentPublic({ commentId, replyText, pageAccessToken }) {
-  const url = `https://graph.facebook.com/v24.0/${commentId}/replies`;
-  const { data, status } = await http.post(
-    url,
-    { message :  replyText },
-    { headers: { Authorization: `Bearer ${pageAccessToken}` } }
 
-  );
 
-  if (status >= 400) {
-    const err = new Error("Public reply failed");
-    err.details = data?.error || data;
+async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
+  try {
+    console.log("Replying to comment:", commentId);
+    
+    const url = `https://graph.facebook.com/v24.0/${commentId}/replies`;
+    const res = await axios.post(
+      url,
+      { message: replyText },
+      { headers: { Authorization: `Bearer ${pageAccessToken}` } }
+    );
+    
+    console.log("✅ Replied to comment", commentId, res.data);
+    return res.data;
+  } catch (err) {
+    console.error(
+      "❌ IG reply failed",
+      commentId,
+      err.response?.data || err.message
+    );
     throw err;
   }
-  return data;
 }
 
 async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken }) {
@@ -250,6 +263,8 @@ app.post("/pubsub", async (req, res) => {
                 message: auto.publicReply,
                 pageAccessToken: accessToken,
               });
+
+              console.log('Why Reply Failing : ', data);
               publicSent = true;
               await finalizeAction({
                 automationId: auto._id,
