@@ -85,5 +85,9 @@ const AutomationSchema = new Schema(
 // Ensure one automation per user per post
 // AutomationSchema.index({ userId: 1, postId: 1 }, { unique: true });
 
+AutomationSchema.index({ userId: 1, postId: 1 }, { unique: true });         // enforce 1 automation per post per user
+AutomationSchema.index({ status: 1, platform: 1, postId: 1 });              // fast lookup during matching
+AutomationSchema.index({ "runStats.lastRunAt": 1 }); 
+
 const Automation = mongoose.models.Automation || mongoose.model("Automation", AutomationSchema, "automations");
 export default Automation;

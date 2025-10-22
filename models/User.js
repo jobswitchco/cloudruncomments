@@ -53,6 +53,10 @@ const User_Schema = new Schema({
   updated_at: { type: Date },
 });
 
+User_Schema.index({ fbPageId: 1 });
+User_Schema.index({ fbPageAccessToken: 1 }); // optional; often helpful
+
+
 // Register model as "User" but use existing collection "users"
 const User = mongoose.models.User || mongoose.model("User", User_Schema, "users");
 export default User;
