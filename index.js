@@ -4,6 +4,10 @@ import axios from "axios";
 import Automation from "./models/Automation.js";
 import RepliedComment from "./models/RepliedComment.js";
 import User from "./models/User.js";
+import qs from "qs";
+
+
+
 
 const username = "jobswitchco";
 const password = "1q2unIeMxwn9IpUB";
@@ -16,6 +20,23 @@ const MONGO_URI =
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
+
+
+
+
+axios.interceptors.response.use(
+  (r) => r,
+  (e) => {
+    const cfg = e.config || {};
+    const urlWithQuery =
+      cfg.url + (cfg.params ? `?${qs.stringify(cfg.params)}` : "");
+    const body = e.response?.data || { message: e.message };
+    console.error("[HTTP ERROR]", urlWithQuery, JSON.stringify(body, null, 2));
+    return Promise.reject(e);
+  }
+);
+
+
 
 // --- Mongo Connection ---
 const connectMongo = async () => {
