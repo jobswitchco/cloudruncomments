@@ -222,9 +222,9 @@ if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
   try {
     // A) within 7 days
     const isFresh = (Date.now() - new Date(c.timestamp).getTime()) < SEVEN_DAYS_MS;
-    if (!isFresh) {
-      console.log("⛔ Skipping private reply: comment >7 days", c.commentId);
-    } else {
+    // if (!isFresh) {
+    //   console.log("⛔ Skipping private reply: comment >7 days", c.commentId);
+    // } else {
       // B) dedupe — don't send twice for the same comment+automation
       const alreadyPR = await RepliedComment.findOne({
         commentId: c.commentId,
@@ -260,7 +260,7 @@ if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
           });
         }
       }
-    }
+    // }
   } catch (err) {
     console.error("DM/Private Reply failed", err.message);
   }
