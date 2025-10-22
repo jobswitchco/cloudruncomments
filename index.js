@@ -124,15 +124,29 @@ async function getIgUserIdForPage(pageId, pageAccessToken) {
   return ig.id; // <IG_USER_ID>
 }
 
-async function sendPrivateReply(igUserId, commentId, text, pageAccessToken) {
+// Accepts optional quickReplies: [{ title: "Yes, send recipe!", payload: "SEND_RECIPE" }, ...]
+async function sendPrivateReply(igUserId, commentId, text, pageAccessToken, quickReplies = []) {
   if (!igUserId) throw new Error("IG user id missing");
   if (!commentId) throw new Error("commentId missing");
   if (!text || !text.trim()) throw new Error("message text missing");
 
+  // Build quick_replies if provided
+  let message = { text: text.trim() };
+  if (Array.isArray(quickReplies) && quickReplies.length) {
+    message.quick_replies = quickReplies
+      .filter(q => q && q.title && q.payload)
+      .map(q => ({
+        content_type: "text",
+        title: String(q.title).slice(0, 20),   // IG limit ~20 chars for titles
+        payload: String(q.payload).slice(0, 100) // keep payload compact
+      }))
+      .slice(0, 13); // platform cap safeguard
+  }
+
   const url = `https://graph.facebook.com/v24.0/${igUserId}/messages`;
   const payload = {
     recipient: { comment_id: String(commentId) },
-    message: { text: text.trim() }
+    message
   };
 
   try {
@@ -144,10 +158,14 @@ async function sendPrivateReply(igUserId, commentId, text, pageAccessToken) {
     console.log("✅ Private Reply OK:", data);
     return { ok: true, data };
   } catch (err) {
-    // The interceptor above will print the full details.
-    return { ok: false, error: err.response?.data?.error || err.response?.data || { message: err.message } };
+    // Your axios interceptor (if added) will log full details.
+    return {
+      ok: false,
+      error: err.response?.data?.error || err.response?.data || { message: err.message }
+    };
   }
 }
+
 
 
 
@@ -237,7 +255,18 @@ if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
     const igUserId = await getIgUserIdForPage(user.fbPageId, accessToken);
     console.log('igUserId::::::::::::', igUserId);
     // Use a Private Reply first (one-per-comment, within 7 days)
-    const pr = await sendPrivateReply(igUserId, c.commentId, auto.dm.message, accessToken);
+    // const pr = await sendPrivateReply(fbPageId, c.commentId, auto.dm.message, accessToken);
+ const pr =   await sendPrivateReply(
+  fbPageId,
+  c.commentId,
+  "Hi! I saw you're interested in the recipe. Would you like me to send it to you?",
+  accessToken,
+  [
+    { title: "Yes, send recipe!", payload: "SEND_RECIPE" },
+    { title: "No, thanks",        payload: "NO_THANKS" }
+  ]
+);
+
 
     if (pr.success) {
       dmSent = true; // count as a sent DM for your stats
