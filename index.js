@@ -238,7 +238,7 @@ app.post("/pubsub", async (req, res) => {
 
         // 2) Load user tokens
         const user = await User.findById(auto.userId).lean();
-        const accessToken = user?.fbPageAccessToken;
+        const accessToken = user?.fbLongLivedToken;
         const fbPageId = user?.fbPageId;
         if (!accessToken || !fbPageId) {
           console.warn("⚠️ Missing fbPageAccessToken/fbPageId for user", String(auto.userId));
