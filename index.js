@@ -171,6 +171,9 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken 
     { params: { access_token: pageAccessToken } }
   );
 
+    console.log("✅ Private message to comment", commentId, res.data);
+
+
   if (status >= 400) {
     const err = new Error("Private reply failed");
     err.details = data?.error || data;
@@ -351,11 +354,12 @@ app.post("/pubsub", async (req, res) => {
                 channel: "private",
                 ok: true,
               });
-              await RepliedComment.create({
+           await RepliedComment.create({
                 commentId: c.commentId,
                 automationId: auto._id,
                 channel: "private",
-                text: c.text,
+                text: c.text,  // Original comment text
+                sentMessage: auto.dm.message,  // Add this field to store the DM text
                 status: "sent",
               });
               console.log("✅ Private reply sent", { commentId: c.commentId, data });
