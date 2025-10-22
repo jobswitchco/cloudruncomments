@@ -122,7 +122,9 @@ async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
     const res = await axios.post(
       url,
       { message: replyText },
-      { headers: { Authorization: `Bearer ${pageAccessToken}` } }
+      { 
+        params: { access_token: pageAccessToken }  // ✅ Use query param instead of header
+      }
     );
     
     console.log("✅ Replied to comment", commentId, res.data);
