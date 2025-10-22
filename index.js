@@ -176,24 +176,31 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
 //   }
 // }
 
-// --- IG Private Reply helper (first touch off a comment)
+
+
 async function sendPrivateReply(commentId, message, pageAccessToken) {
   try {
-    const url = `https://graph.facebook.com/v24.0/${commentId}/private_replies`;
+    console.log("[IG] POST /{commentId}/private_replies", commentId);
     const res = await axios.post(
-      url,
+      `https://graph.facebook.com/v24.0/${commentId}/private_replies`,
       { message },
-      { params: { access_token: pageAccessToken } } // Graph prefers token in params
+      { params: { access_token: pageAccessToken } }
     );
-    console.log("✅ Private reply sent", res.data);
+    console.log("✅ Private reply OK", res.data);
     return { success: true, data: res.data };
   } catch (err) {
-    const code = err.response?.data?.error?.code;
-    const sub = err.response?.data?.error?.error_subcode;
-    console.error("❌ Private reply failed", err.response?.data || err.message);
-    return { success: false, code, sub, raw: err.response?.data };
+    const payload = err.response?.data;
+    console.error("❌ Private reply ERROR", JSON.stringify(payload, null, 2));
+    return {
+      success: false,
+      code: payload?.error?.code,
+      sub: payload?.error?.error_subcode,
+      msg: payload?.error?.message,
+      raw: payload
+    };
   }
 }
+
 
 
 // --- Pub/Sub push handler ---
