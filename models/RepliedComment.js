@@ -8,6 +8,7 @@ const RepliedCommentSchema = new Schema(
     automationId: { type: Schema.Types.ObjectId, ref: "automations", required: true },
     repliedAt: { type: Date, default: Date.now },
     text: { type: String },
+    type:{ type : String}
   },
   { timestamps: true }
 );

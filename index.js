@@ -4,6 +4,8 @@ import axios from "axios";
 import Automation from "./models/Automation.js";
 import RepliedComment from "./models/RepliedComment.js";
 import User from "./models/User.js";
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
 
 const username = "jobswitchco";
 const password = "1q2unIeMxwn9IpUB";
@@ -88,93 +90,6 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
     throw err;
   }
 }
-
-// --- IG DM helper ---
-// async function sendInstagramDM(recipientUserId, message, pageId, pageAccessToken, button = null) {
-//   try {
-//     console.log("Sending DM to user:", recipientUserId);
-    
-//     // Use the correct Instagram messaging endpoint with recipient as Instagram Scoped ID (IGSID)
-//     const url = `https://graph.facebook.com/v24.0/me/messages`;
-    
-//     // Build message payload
-//     const payload = {
-//       recipient: { id: recipientUserId },
-//       message: { text: message }
-//     };
-
-//     // Add button if provided and message is text-only
-//     if (button && button.text && button.url) {
-//       // Instagram supports generic template with buttons
-//       payload.message = {
-//         attachment: {
-//           type: "template",
-//           payload: {
-//             template_type: "generic",
-//             elements: [
-//               {
-//                 title: message.substring(0, 80), // Title has 80 char limit
-//                 buttons: [
-//                   {
-//                     type: "web_url",
-//                     url: button.url,
-//                     title: button.text.substring(0, 20) // Button text has 20 char limit
-//                   }
-//                 ]
-//               }
-//             ]
-//           }
-//         }
-//       };
-//     }
-
-//     const res = await axios.post(url, payload, {
-//       headers: { Authorization: `Bearer ${pageAccessToken}` },
-//       params: { access_token: pageAccessToken } // Some setups need this in params
-//     });
-
-//     console.log("✅ DM sent to user", recipientUserId, res.data);
-//     return { success: true, data: res.data };
-//   } catch (err) {
-//     const errorCode = err.response?.data?.error?.code;
-//     const errorMessage = err.response?.data?.error?.message || '';
-//     const errorSubcode = err.response?.data?.error?.error_subcode;
-    
-//     // Handle Advanced Access permission error gracefully
-//     if (errorCode === 200 && errorMessage.includes('Advanced Access')) {
-//       console.warn(
-//         "⚠️ DM skipped - User not an app tester. Need Advanced Access approval.",
-//         recipientUserId
-//       );
-//       return { 
-//         success: false, 
-//         reason: 'awaiting_advanced_access',
-//         recipientId: recipientUserId 
-//       };
-//     }
-    
-//     // Handle 24-hour window error
-//     if (errorCode === 10 && errorSubcode === 2534022) {
-//       console.warn(
-//         "⚠️ DM skipped - Outside 24-hour messaging window.",
-//         recipientUserId
-//       );
-//       return {
-//         success: false,
-//         reason: 'outside_messaging_window',
-//         recipientId: recipientUserId
-//       };
-//     }
-    
-//     // Log and re-throw other errors
-//     console.error(
-//       "❌ IG DM failed",
-//       recipientUserId,
-//       err.response?.data || err.message
-//     );
-//     throw err;
-//   }
-// }
 
 
 
@@ -281,49 +196,51 @@ app.post("/pubsub", async (req, res) => {
         }
       }
 
-      // 6️⃣ send DM if configured
-      // if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
-      //   try {
-      //     const dmResult = await sendInstagramDM(
-      //       c.fromUserId,
-      //       auto.dm.message,
-      //       fbPageId,
-      //       accessToken,
-      //       auto.dm.button
-      //     );
-          
-      //     if (dmResult.success) {
-      //       dmSent = true;
-      //       console.log(`✅ Sent DM to user ${c.fromUsername || c.fromUserId}`);
-      //     } else if (dmResult.reason === 'awaiting_advanced_access') {
-      //       console.log(`⏳ DM pending Advanced Access approval for ${c.fromUsername || c.fromUserId}`);
-      //       // Optionally: Store this in a queue for retry after approval
-      //     }
-      //   } catch (err) {
-      //     console.error("DM failed with unexpected error", err.message);
-      //   }
-      // }
 
 
-      // 6️⃣ send DM/private reply if configured
+// 6️⃣ send Private Reply (ManyChat-style: one message, then stop)
 if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
   try {
-    // Use a Private Reply first (one-per-comment, within 7 days)
-    const pr = await sendPrivateReply(c.commentId, auto.dm.message, accessToken);
+    // A) age guard — private reply allowed only within 7 days of the comment
+    const isFresh = (Date.now() - new Date(c.timestamp).getTime()) < SEVEN_DAYS_MS;
+    if (!isFresh) {
+      console.log("⛔ Skipping private reply: comment older than 7 days", c.commentId);
+    } else {
+      // B) dedupe — if we already private-replied to this comment+automation, skip
+      const alreadyPR = await RepliedComment.findOne({
+        commentId: c.commentId,
+        automationId: auto._id,
+        type: "private_reply"
+      });
 
-    if (pr.success) {
-      dmSent = true; // count as a sent DM for your stats
-    } else if (pr.code === 100 /* validation */) {
-      // Possibly already used private reply for this comment or window elapsed
-      console.warn("⚠️ Private reply not allowed for this comment now.");
-    } else if (pr.code === 10 && pr.sub === 2534022) {
-      // Shouldn't happen with private_replies, but keep for completeness
-      console.warn("⚠️ Window issue.");
+      if (alreadyPR) {
+        console.log("⛔ Private reply already used for this comment", c.commentId);
+      } else {
+        // C) send one private reply (shows up as a DM)
+        const pr = await sendPrivateReply(c.commentId, auto.dm.message, accessToken);
+
+        if (pr.success) {
+          dmSent = true; // count this as the “DM” touch in your stats (it is the private reply)
+          // Persist with a type so we never send twice
+          await RepliedComment.create({
+            commentId: c.commentId,
+            automationId: auto._id,
+            text: c.text,
+            type: "private_reply"
+          });
+          console.log("✅ Private reply sent (ManyChat-style), waiting for user to DM back.");
+        } else {
+          console.warn("⚠️ Private reply failed; not attempting /me/messages (policy).", {
+            code: pr.code, sub: pr.sub, msg: pr.msg
+          });
+        }
+      }
     }
   } catch (err) {
     console.error("DM/Private Reply failed", err.message);
   }
 }
+
 
 
       // 7️⃣ record the interaction
