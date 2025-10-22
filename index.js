@@ -90,91 +90,111 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
 }
 
 // --- IG DM helper ---
-async function sendInstagramDM(recipientUserId, message, pageId, pageAccessToken, button = null) {
+// async function sendInstagramDM(recipientUserId, message, pageId, pageAccessToken, button = null) {
+//   try {
+//     console.log("Sending DM to user:", recipientUserId);
+    
+//     // Use the correct Instagram messaging endpoint with recipient as Instagram Scoped ID (IGSID)
+//     const url = `https://graph.facebook.com/v24.0/me/messages`;
+    
+//     // Build message payload
+//     const payload = {
+//       recipient: { id: recipientUserId },
+//       message: { text: message }
+//     };
+
+//     // Add button if provided and message is text-only
+//     if (button && button.text && button.url) {
+//       // Instagram supports generic template with buttons
+//       payload.message = {
+//         attachment: {
+//           type: "template",
+//           payload: {
+//             template_type: "generic",
+//             elements: [
+//               {
+//                 title: message.substring(0, 80), // Title has 80 char limit
+//                 buttons: [
+//                   {
+//                     type: "web_url",
+//                     url: button.url,
+//                     title: button.text.substring(0, 20) // Button text has 20 char limit
+//                   }
+//                 ]
+//               }
+//             ]
+//           }
+//         }
+//       };
+//     }
+
+//     const res = await axios.post(url, payload, {
+//       headers: { Authorization: `Bearer ${pageAccessToken}` },
+//       params: { access_token: pageAccessToken } // Some setups need this in params
+//     });
+
+//     console.log("✅ DM sent to user", recipientUserId, res.data);
+//     return { success: true, data: res.data };
+//   } catch (err) {
+//     const errorCode = err.response?.data?.error?.code;
+//     const errorMessage = err.response?.data?.error?.message || '';
+//     const errorSubcode = err.response?.data?.error?.error_subcode;
+    
+//     // Handle Advanced Access permission error gracefully
+//     if (errorCode === 200 && errorMessage.includes('Advanced Access')) {
+//       console.warn(
+//         "⚠️ DM skipped - User not an app tester. Need Advanced Access approval.",
+//         recipientUserId
+//       );
+//       return { 
+//         success: false, 
+//         reason: 'awaiting_advanced_access',
+//         recipientId: recipientUserId 
+//       };
+//     }
+    
+//     // Handle 24-hour window error
+//     if (errorCode === 10 && errorSubcode === 2534022) {
+//       console.warn(
+//         "⚠️ DM skipped - Outside 24-hour messaging window.",
+//         recipientUserId
+//       );
+//       return {
+//         success: false,
+//         reason: 'outside_messaging_window',
+//         recipientId: recipientUserId
+//       };
+//     }
+    
+//     // Log and re-throw other errors
+//     console.error(
+//       "❌ IG DM failed",
+//       recipientUserId,
+//       err.response?.data || err.message
+//     );
+//     throw err;
+//   }
+// }
+
+// --- IG Private Reply helper (first touch off a comment)
+async function sendPrivateReply(commentId, message, pageAccessToken) {
   try {
-    console.log("Sending DM to user:", recipientUserId);
-    
-    // Use the correct Instagram messaging endpoint with recipient as Instagram Scoped ID (IGSID)
-    const url = `https://graph.facebook.com/v24.0/me/messages`;
-    
-    // Build message payload
-    const payload = {
-      recipient: { id: recipientUserId },
-      message: { text: message }
-    };
-
-    // Add button if provided and message is text-only
-    if (button && button.text && button.url) {
-      // Instagram supports generic template with buttons
-      payload.message = {
-        attachment: {
-          type: "template",
-          payload: {
-            template_type: "generic",
-            elements: [
-              {
-                title: message.substring(0, 80), // Title has 80 char limit
-                buttons: [
-                  {
-                    type: "web_url",
-                    url: button.url,
-                    title: button.text.substring(0, 20) // Button text has 20 char limit
-                  }
-                ]
-              }
-            ]
-          }
-        }
-      };
-    }
-
-    const res = await axios.post(url, payload, {
-      headers: { Authorization: `Bearer ${pageAccessToken}` },
-      params: { access_token: pageAccessToken } // Some setups need this in params
-    });
-
-    console.log("✅ DM sent to user", recipientUserId, res.data);
+    const url = `https://graph.facebook.com/v24.0/${commentId}/private_replies`;
+    const res = await axios.post(
+      url,
+      { message },
+      { params: { access_token: pageAccessToken } } // Graph prefers token in params
+    );
+    console.log("✅ Private reply sent", res.data);
     return { success: true, data: res.data };
   } catch (err) {
-    const errorCode = err.response?.data?.error?.code;
-    const errorMessage = err.response?.data?.error?.message || '';
-    const errorSubcode = err.response?.data?.error?.error_subcode;
-    
-    // Handle Advanced Access permission error gracefully
-    if (errorCode === 200 && errorMessage.includes('Advanced Access')) {
-      console.warn(
-        "⚠️ DM skipped - User not an app tester. Need Advanced Access approval.",
-        recipientUserId
-      );
-      return { 
-        success: false, 
-        reason: 'awaiting_advanced_access',
-        recipientId: recipientUserId 
-      };
-    }
-    
-    // Handle 24-hour window error
-    if (errorCode === 10 && errorSubcode === 2534022) {
-      console.warn(
-        "⚠️ DM skipped - Outside 24-hour messaging window.",
-        recipientUserId
-      );
-      return {
-        success: false,
-        reason: 'outside_messaging_window',
-        recipientId: recipientUserId
-      };
-    }
-    
-    // Log and re-throw other errors
-    console.error(
-      "❌ IG DM failed",
-      recipientUserId,
-      err.response?.data || err.message
-    );
-    throw err;
+    const code = err.response?.data?.error?.code;
+    const sub = err.response?.data?.error?.error_subcode;
+    console.error("❌ Private reply failed", err.response?.data || err.message);
+    return { success: false, code, sub, raw: err.response?.data };
   }
 }
+
 
 // --- Pub/Sub push handler ---
 app.post("/pubsub", async (req, res) => {
@@ -255,27 +275,49 @@ app.post("/pubsub", async (req, res) => {
       }
 
       // 6️⃣ send DM if configured
-      if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
-        try {
-          const dmResult = await sendInstagramDM(
-            c.fromUserId,
-            auto.dm.message,
-            fbPageId,
-            accessToken,
-            auto.dm.button
-          );
+      // if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
+      //   try {
+      //     const dmResult = await sendInstagramDM(
+      //       c.fromUserId,
+      //       auto.dm.message,
+      //       fbPageId,
+      //       accessToken,
+      //       auto.dm.button
+      //     );
           
-          if (dmResult.success) {
-            dmSent = true;
-            console.log(`✅ Sent DM to user ${c.fromUsername || c.fromUserId}`);
-          } else if (dmResult.reason === 'awaiting_advanced_access') {
-            console.log(`⏳ DM pending Advanced Access approval for ${c.fromUsername || c.fromUserId}`);
-            // Optionally: Store this in a queue for retry after approval
-          }
-        } catch (err) {
-          console.error("DM failed with unexpected error", err.message);
-        }
-      }
+      //     if (dmResult.success) {
+      //       dmSent = true;
+      //       console.log(`✅ Sent DM to user ${c.fromUsername || c.fromUserId}`);
+      //     } else if (dmResult.reason === 'awaiting_advanced_access') {
+      //       console.log(`⏳ DM pending Advanced Access approval for ${c.fromUsername || c.fromUserId}`);
+      //       // Optionally: Store this in a queue for retry after approval
+      //     }
+      //   } catch (err) {
+      //     console.error("DM failed with unexpected error", err.message);
+      //   }
+      // }
+
+
+      // 6️⃣ send DM/private reply if configured
+if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
+  try {
+    // Use a Private Reply first (one-per-comment, within 7 days)
+    const pr = await sendPrivateReply(c.commentId, auto.dm.message, accessToken);
+
+    if (pr.success) {
+      dmSent = true; // count as a sent DM for your stats
+    } else if (pr.code === 100 /* validation */) {
+      // Possibly already used private reply for this comment or window elapsed
+      console.warn("⚠️ Private reply not allowed for this comment now.");
+    } else if (pr.code === 10 && pr.sub === 2534022) {
+      // Shouldn't happen with private_replies, but keep for completeness
+      console.warn("⚠️ Window issue.");
+    }
+  } catch (err) {
+    console.error("DM/Private Reply failed", err.message);
+  }
+}
+
 
       // 7️⃣ record the interaction
       if (replySent || dmSent) {
