@@ -171,7 +171,7 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken 
     { params: { access_token: pageAccessToken } }
   );
 
-    console.log("✅ Private message to comment", commentId, res.data);
+    console.log("✅ Private message to comment", commentId);
 
 
   if (status >= 400) {
