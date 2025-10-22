@@ -107,12 +107,13 @@ async function extractCommentEvents(envelope) {
 }
 
 // ---------- Graph helpers ----------
-async function replyToCommentPublic({ commentId, message, pageAccessToken }) {
+async function replyToCommentPublic({ commentId, replyText, pageAccessToken }) {
   const url = `https://graph.facebook.com/v24.0/${commentId}/replies`;
   const { data, status } = await http.post(
     url,
-    { message },
-    { params: { access_token: pageAccessToken } }
+    { message :  replyText },
+    { headers: { Authorization: `Bearer ${pageAccessToken}` } }
+
   );
 
   if (status >= 400) {
