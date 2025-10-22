@@ -93,46 +93,28 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
 
 
 
-// --- Resolve IG user id from the Page id (cache it if you can)
-async function getIgUserIdForPage(pageId, pageAccessToken) {
-  const url = `https://graph.facebook.com/v24.0/${pageId}`;
-  const res = await axios.get(url, {
-    params: {
-      access_token: pageAccessToken,
-      fields: "instagram_business_account{id,username}"
-    }
-  });
-  const ig = res.data?.instagram_business_account;
-  if (!ig?.id) throw new Error("No instagram_business_account linked to page");
-  return ig.id; // <APP_USERS_IG_ID>
-}
 
-// --- Private Reply via Instagram Messaging API (shows up as a DM)
+
 async function sendPrivateReplyViaMessages(igUserId, commentId, text, pageAccessToken) {
+  const url = `https://graph.facebook.com/v24.0/${igUserId}/messages`;
+  const payload = {
+    recipient: { comment_id: String(commentId) }, // NOTE: comment_id, not id
+    message: { text }
+  };
   try {
-    const url = `https://graph.facebook.com/v24.0/${igUserId}/messages`;
-    // Private Reply: recipient.comment_id
-    const payload = {
-      recipient: { comment_id: String(commentId) },
-      message: { text }
-    };
-    const res = await axios.post(url, payload, {
-      params: { access_token: pageAccessToken }
+    const { data } = await axios.post(url, payload, {
+      params: { access_token: pageAccessToken } // token as query param (or use Authorization header)
     });
-    console.log("✅ Private Reply (messages) OK", res.data);
-    return { success: true, data: res.data };
+    console.log("✅ Private Reply (IG) OK", data);
+    return { success: true, data };
   } catch (err) {
-    const e = err.response?.data || { message: err.message };
-    console.error("❌ Private Reply (messages) ERROR", JSON.stringify(e, null, 2));
-    return {
-      success: false,
-      code: e?.error?.code,
-      sub: e?.error?.error_subcode,
-      msg: e?.error?.message,
-      raw: e
-    };
+    console.error("❌ Private Reply (IG) ERROR",
+      JSON.stringify(err.response?.data || { message: err.message }, null, 2));
+    const e = err.response?.data?.error || {};
+    return { success: false, code: e.code, sub: e.error_subcode, msg: e.message };
   }
 }
+
 
 
 
@@ -239,7 +221,7 @@ if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
 
         // D) send private reply (delivered as DM)
         const pr = await sendPrivateReplyViaMessages(
-          igUserId,
+          '17841402138259768',
           c.commentId,
           auto.dm.message,
           accessToken
