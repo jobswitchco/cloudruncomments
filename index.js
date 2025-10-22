@@ -260,11 +260,11 @@ app.post("/pubsub", async (req, res) => {
 
           if (proceed) {
             try {
-              const data = await replyToCommentPublic({
-                commentId: c.commentId,
-                message: auto.publicReply,
-                pageAccessToken: accessToken,
-              });
+              const data = await replyToCommentPublic(
+                              c.commentId,
+                              auto.publicReply,
+                              accessToken
+                            );
 
               console.log('Why Reply Failing : ', data);
               publicSent = true;
