@@ -93,28 +93,47 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
 
 
 
-async function sendPrivateReply(commentId, message, pageAccessToken) {
+// --- Resolve IG user id from the Page id (cache it if you can)
+async function getIgUserIdForPage(pageId, pageAccessToken) {
+  const url = `https://graph.facebook.com/v24.0/${pageId}`;
+  const res = await axios.get(url, {
+    params: {
+      access_token: pageAccessToken,
+      fields: "instagram_business_account{id,username}"
+    }
+  });
+  const ig = res.data?.instagram_business_account;
+  if (!ig?.id) throw new Error("No instagram_business_account linked to page");
+  return ig.id; // <APP_USERS_IG_ID>
+}
+
+// --- Private Reply via Instagram Messaging API (shows up as a DM)
+async function sendPrivateReplyViaMessages(igUserId, commentId, text, pageAccessToken) {
   try {
-    console.log("[IG] POST /{commentId}/private_replies", commentId);
-    const res = await axios.post(
-      `https://graph.facebook.com/v24.0/${commentId}/private_replies`,
-      { message },
-      { params: { access_token: pageAccessToken } }
-    );
-    console.log("✅ Private reply OK", res.data);
+    const url = `https://graph.facebook.com/v24.0/${igUserId}/messages`;
+    // Private Reply: recipient.comment_id
+    const payload = {
+      recipient: { comment_id: String(commentId) },
+      message: { text }
+    };
+    const res = await axios.post(url, payload, {
+      params: { access_token: pageAccessToken }
+    });
+    console.log("✅ Private Reply (messages) OK", res.data);
     return { success: true, data: res.data };
   } catch (err) {
-    const payload = err.response?.data;
-    console.error("❌ Private reply ERROR", JSON.stringify(payload, null, 2));
+    const e = err.response?.data || { message: err.message };
+    console.error("❌ Private Reply (messages) ERROR", JSON.stringify(e, null, 2));
     return {
       success: false,
-      code: payload?.error?.code,
-      sub: payload?.error?.error_subcode,
-      msg: payload?.error?.message,
-      raw: payload
+      code: e?.error?.code,
+      sub: e?.error?.error_subcode,
+      msg: e?.error?.message,
+      raw: e
     };
   }
 }
+
 
 
 
@@ -198,39 +217,45 @@ app.post("/pubsub", async (req, res) => {
 
 
 
-// 6️⃣ send Private Reply (ManyChat-style: one message, then stop)
+// 6️⃣ ManyChat-style: ONE Private Reply via /{ig_user_id}/messages, then STOP
 if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
   try {
-    // A) age guard — private reply allowed only within 7 days of the comment
+    // A) within 7 days
     const isFresh = (Date.now() - new Date(c.timestamp).getTime()) < SEVEN_DAYS_MS;
     if (!isFresh) {
-      console.log("⛔ Skipping private reply: comment older than 7 days", c.commentId);
+      console.log("⛔ Skipping private reply: comment >7 days", c.commentId);
     } else {
-      // B) dedupe — if we already private-replied to this comment+automation, skip
+      // B) dedupe — don't send twice for the same comment+automation
       const alreadyPR = await RepliedComment.findOne({
         commentId: c.commentId,
         automationId: auto._id,
         type: "private_reply"
       });
-
       if (alreadyPR) {
-        console.log("⛔ Private reply already used for this comment", c.commentId);
+        console.log("⛔ Private reply already sent for comment", c.commentId);
       } else {
-        // C) send one private reply (shows up as a DM)
-        const pr = await sendPrivateReply(c.commentId, auto.dm.message, accessToken);
+        // C) resolve the IG user id tied to this Page token
+        const igUserId = await getIgUserIdForPage(fbPageId, accessToken);
+
+        // D) send private reply (delivered as DM)
+        const pr = await sendPrivateReplyViaMessages(
+          igUserId,
+          c.commentId,
+          auto.dm.message,
+          accessToken
+        );
 
         if (pr.success) {
-          dmSent = true; // count this as the “DM” touch in your stats (it is the private reply)
-          // Persist with a type so we never send twice
+          dmSent = true; // count it in your stats if you want
           await RepliedComment.create({
             commentId: c.commentId,
             automationId: auto._id,
             text: c.text,
             type: "private_reply"
           });
-          console.log("✅ Private reply sent (ManyChat-style), waiting for user to DM back.");
+          console.log("✅ Private reply sent; waiting for user to respond in DM.");
         } else {
-          console.warn("⚠️ Private reply failed; not attempting /me/messages (policy).", {
+          console.warn("⚠️ Private reply failed; NOT attempting /me/messages.", {
             code: pr.code, sub: pr.sub, msg: pr.msg
           });
         }
