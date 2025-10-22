@@ -94,7 +94,8 @@ async function sendInstagramDM(recipientUserId, message, pageId, pageAccessToken
   try {
     console.log("Sending DM to user:", recipientUserId);
     
-    const url = `https://graph.facebook.com/v24.0/${pageId}/messages`;
+    // Use the correct Instagram messaging endpoint with recipient as Instagram Scoped ID (IGSID)
+    const url = `https://graph.facebook.com/v24.0/me/messages`;
     
     // Build message payload
     const payload = {
@@ -102,19 +103,24 @@ async function sendInstagramDM(recipientUserId, message, pageId, pageAccessToken
       message: { text: message }
     };
 
-    // Add button if provided
+    // Add button if provided and message is text-only
     if (button && button.text && button.url) {
+      // Instagram supports generic template with buttons
       payload.message = {
         attachment: {
           type: "template",
           payload: {
-            template_type: "button",
-            text: message,
-            buttons: [
+            template_type: "generic",
+            elements: [
               {
-                type: "web_url",
-                url: button.url,
-                title: button.text
+                title: message.substring(0, 80), // Title has 80 char limit
+                buttons: [
+                  {
+                    type: "web_url",
+                    url: button.url,
+                    title: button.text.substring(0, 20) // Button text has 20 char limit
+                  }
+                ]
               }
             ]
           }
@@ -123,12 +129,44 @@ async function sendInstagramDM(recipientUserId, message, pageId, pageAccessToken
     }
 
     const res = await axios.post(url, payload, {
-      headers: { Authorization: `Bearer ${pageAccessToken}` }
+      headers: { Authorization: `Bearer ${pageAccessToken}` },
+      params: { access_token: pageAccessToken } // Some setups need this in params
     });
 
     console.log("✅ DM sent to user", recipientUserId, res.data);
-    return res.data;
+    return { success: true, data: res.data };
   } catch (err) {
+    const errorCode = err.response?.data?.error?.code;
+    const errorMessage = err.response?.data?.error?.message || '';
+    const errorSubcode = err.response?.data?.error?.error_subcode;
+    
+    // Handle Advanced Access permission error gracefully
+    if (errorCode === 200 && errorMessage.includes('Advanced Access')) {
+      console.warn(
+        "⚠️ DM skipped - User not an app tester. Need Advanced Access approval.",
+        recipientUserId
+      );
+      return { 
+        success: false, 
+        reason: 'awaiting_advanced_access',
+        recipientId: recipientUserId 
+      };
+    }
+    
+    // Handle 24-hour window error
+    if (errorCode === 10 && errorSubcode === 2534022) {
+      console.warn(
+        "⚠️ DM skipped - Outside 24-hour messaging window.",
+        recipientUserId
+      );
+      return {
+        success: false,
+        reason: 'outside_messaging_window',
+        recipientId: recipientUserId
+      };
+    }
+    
+    // Log and re-throw other errors
     console.error(
       "❌ IG DM failed",
       recipientUserId,
@@ -154,6 +192,8 @@ app.post("/pubsub", async (req, res) => {
 
   await connectMongo();
   const commentEvents = await extractCommentEvents(envelope);
+
+  console.log("pubsub entered:", commentEvents);
 
   for (const c of commentEvents) {
     console.log("💬 Comment received:", c.text);
@@ -217,17 +257,23 @@ app.post("/pubsub", async (req, res) => {
       // 6️⃣ send DM if configured
       if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
         try {
-          await sendInstagramDM(
+          const dmResult = await sendInstagramDM(
             c.fromUserId,
             auto.dm.message,
             fbPageId,
             accessToken,
             auto.dm.button
           );
-          dmSent = true;
-          console.log(`✅ Sent DM to user ${c.fromUsername || c.fromUserId}`);
+          
+          if (dmResult.success) {
+            dmSent = true;
+            console.log(`✅ Sent DM to user ${c.fromUsername || c.fromUserId}`);
+          } else if (dmResult.reason === 'awaiting_advanced_access') {
+            console.log(`⏳ DM pending Advanced Access approval for ${c.fromUsername || c.fromUserId}`);
+            // Optionally: Store this in a queue for retry after approval
+          }
         } catch (err) {
-          console.error("DM failed", err.message);
+          console.error("DM failed with unexpected error", err.message);
         }
       }
 
