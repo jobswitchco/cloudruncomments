@@ -114,6 +114,31 @@ async function extractCommentEvents(envelope) {
 
 
 
+// async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
+//   try {
+//     console.log("Replying to comment:", commentId);
+    
+//     const url = `https://graph.facebook.com/v24.0/${commentId}/replies`;
+//     const res = await axios.post(
+//       url,
+//       { message: replyText },
+//       { 
+//         params: { access_token: pageAccessToken }  // ✅ Use query param instead of header
+//       }
+//     );
+    
+//     console.log("✅ Replied to comment", commentId, res.data);
+//     return res.data;
+//   } catch (err) {
+//     console.error(
+//       "❌ IG reply failed",
+//       commentId,
+//       err.response?.data || err.message
+//     );
+//     throw err;
+//   }
+// }
+
 async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
   try {
     console.log("Replying to comment:", commentId);
@@ -122,9 +147,7 @@ async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
     const res = await axios.post(
       url,
       { message: replyText },
-      { 
-        params: { access_token: pageAccessToken }  // ✅ Use query param instead of header
-      }
+      { headers: { Authorization: `Bearer ${pageAccessToken}` } }
     );
     
     console.log("✅ Replied to comment", commentId, res.data);
