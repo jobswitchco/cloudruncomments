@@ -104,15 +104,30 @@ async function getIgUserIdForPage(pageId, pageAccessToken) {
 }
 
 async function sendPrivateReply(igUserId, commentId, text, pageAccessToken) {
+  if (!igUserId) throw new Error("IG user id missing");
+  if (!commentId) throw new Error("commentId missing");
+  if (!text || !text.trim()) throw new Error("message text missing");
+
   const url = `https://graph.facebook.com/v24.0/${igUserId}/messages`;
   const payload = {
     recipient: { comment_id: String(commentId) },
-    message:   { text }
+    message: { text: text.trim() }
   };
-  await axios.post(url, payload, {
-    params: { access_token: pageAccessToken }
-  });
+
+  try {
+    const { data } = await axios.post(url, payload, {
+      params: { access_token: pageAccessToken },
+      headers: { "Content-Type": "application/json" },
+      timeout: 15000
+    });
+    console.log("✅ Private Reply OK:", data);
+    return { ok: true, data };
+  } catch (err) {
+    // The interceptor above will print the full details.
+    return { ok: false, error: err.response?.data?.error || err.response?.data || { message: err.message } };
+  }
 }
+
 
 
 
