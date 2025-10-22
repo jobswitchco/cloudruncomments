@@ -89,25 +89,31 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
   }
 }
 
-// --- IG DM helper ---
-// --- IG Private Reply helper (first touch off a comment)
-async function sendPrivateReply(commentId, message, pageAccessToken) {
-  try {
-    const url = `https://graph.facebook.com/v24.0/${commentId}/private_replies`;
-    const res = await axios.post(
-      url,
-      { message },
-      { params: { access_token: pageAccessToken } } // Graph prefers token in params
-    );
-    console.log("✅ Private reply sent", res.data);
-    return { success: true, data: res.data };
-  } catch (err) {
-    const code = err.response?.data?.error?.code;
-    const sub = err.response?.data?.error?.error_subcode;
-    console.error("❌ Private reply failed", err.response?.data || err.message);
-    return { success: false, code, sub, raw: err.response?.data };
-  }
+
+async function getIgUserIdForPage(pageId, pageAccessToken) {
+  const url = `https://graph.facebook.com/v24.0/${pageId}`;
+  const { data } = await axios.get(url, {
+    params: {
+      access_token: pageAccessToken,
+      fields: "instagram_business_account{id,username}"
+    }
+  });
+  const ig = data?.instagram_business_account;
+  if (!ig?.id) throw new Error("No instagram_business_account linked to page");
+  return ig.id; // <IG_USER_ID>
 }
+
+async function sendPrivateReply(igUserId, commentId, text, pageAccessToken) {
+  const url = `https://graph.facebook.com/v24.0/${igUserId}/messages`;
+  const payload = {
+    recipient: { comment_id: String(commentId) },
+    message:   { text }
+  };
+  await axios.post(url, payload, {
+    params: { access_token: pageAccessToken }
+  });
+}
+
 
 
 // --- Pub/Sub push handler ---
@@ -192,8 +198,10 @@ app.post("/pubsub", async (req, res) => {
     // 6️⃣ send DM/private reply if configured
 if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
   try {
+    const igUserId = await getIgUserIdForPage(user.fbPageId, accessToken);
+    console.log('igUserId::::::::::::', igUserId);
     // Use a Private Reply first (one-per-comment, within 7 days)
-    const pr = await sendPrivateReply(c.commentId, auto.dm.message, accessToken);
+    const pr = await sendPrivateReply(igUserId, c.commentId, auto.dm.message, accessToken);
 
     if (pr.success) {
       dmSent = true; // count as a sent DM for your stats
