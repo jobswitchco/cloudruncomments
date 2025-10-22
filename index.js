@@ -5,9 +5,6 @@ import Automation from "./models/Automation.js";
 import RepliedComment from "./models/RepliedComment.js";
 import User from "./models/User.js";
 
-
-// Accept Pub/Sub push JSON (it posts with content-type: application/json)
-
 const username = "jobswitchco";
 const password = "1q2unIeMxwn9IpUB";
 const MONGO_URI =
@@ -43,7 +40,6 @@ async function extractCommentEvents(envelope) {
     for (const ch of changes) {
       const v = ch?.value || {};
 
-      // In your payload: value.id = comment_id, value.media.id = media_id
       const commentId = v.id;
       const mediaId = v.media?.id;
       const text = v.text || "";
@@ -55,7 +51,7 @@ async function extractCommentEvents(envelope) {
           envelope?.headers?.["X-Hub-Delivery"] ||
           commentId ||
           Math.random().toString(36),
-        pageId: entry?.id, // IG business account ID
+        pageId: entry?.id,
         mediaId,
         commentId,
         text: text.toLowerCase(),
@@ -69,23 +65,18 @@ async function extractCommentEvents(envelope) {
   return events;
 }
 
-
-
 // --- IG public reply helper ---
 async function replyToComment(commentId, replyText, pageAccessToken) {
   try {
-
-    console.log('I am kuthac chimpesstha');
-
-    console.log('commentId-> : ', commentId);
-    console.log('replyText-> : ', replyText);
-    console.log('pageAccessToken-> : ', pageAccessToken);
+    console.log("Replying to comment:", commentId);
+    
     const url = `https://graph.facebook.com/v24.0/${commentId}/replies`;
     const res = await axios.post(
       url,
       { message: replyText },
       { headers: { Authorization: `Bearer ${pageAccessToken}` } }
     );
+    
     console.log("✅ Replied to comment", commentId, res.data);
     return res.data;
   } catch (err) {
@@ -98,7 +89,54 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
   }
 }
 
+// --- IG DM helper ---
+async function sendInstagramDM(recipientUserId, message, pageId, pageAccessToken, button = null) {
+  try {
+    console.log("Sending DM to user:", recipientUserId);
+    
+    const url = `https://graph.facebook.com/v24.0/${pageId}/messages`;
+    
+    // Build message payload
+    const payload = {
+      recipient: { id: recipientUserId },
+      message: { text: message }
+    };
 
+    // Add button if provided
+    if (button && button.text && button.url) {
+      payload.message = {
+        attachment: {
+          type: "template",
+          payload: {
+            template_type: "button",
+            text: message,
+            buttons: [
+              {
+                type: "web_url",
+                url: button.url,
+                title: button.text
+              }
+            ]
+          }
+        }
+      };
+    }
+
+    const res = await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${pageAccessToken}` }
+    });
+
+    console.log("✅ DM sent to user", recipientUserId, res.data);
+    return res.data;
+  } catch (err) {
+    console.error(
+      "❌ IG DM failed",
+      recipientUserId,
+      err.response?.data || err.message
+    );
+    throw err;
+  }
+}
 
 // --- Pub/Sub push handler ---
 app.post("/pubsub", async (req, res) => {
@@ -117,8 +155,6 @@ app.post("/pubsub", async (req, res) => {
   await connectMongo();
   const commentEvents = await extractCommentEvents(envelope);
 
-  console.log('pubsub entered : ', commentEvents);
-
   for (const c of commentEvents) {
     console.log("💬 Comment received:", c.text);
 
@@ -129,7 +165,7 @@ app.post("/pubsub", async (req, res) => {
       status: "active",
     });
 
-    console.log('MYDYYDYD Automations ::::::', automations);
+    console.log("Found automations:", automations.length);
 
     if (!automations?.length) {
       console.log("No active automation for post", c.mediaId);
@@ -156,36 +192,72 @@ app.post("/pubsub", async (req, res) => {
       // 4️⃣ get the user's access token from User collection
       const user = await User.findById(auto.userId);
       const accessToken = user?.fbPageAccessToken;
+      const fbPageId = user?.fbPageId;
       if (!accessToken) {
         console.warn("⚠️ No access token found for user", auto.userId);
         continue;
       }
 
+      let replySent = false;
+      let dmSent = false;
+
       // 5️⃣ send public reply if configured
       if (auto.hasPublicReply && auto.publicReply) {
         try {
           await replyToComment(c.commentId, auto.publicReply, accessToken);
-
-          await RepliedComment.create({
-            commentId: c.commentId,
-            automationId: auto._id,
-            text: c.text,
-          });
-
-          await Automation.updateOne(
-            { _id: auto._id },
-            {
-              $inc: { "runStats.repliesSent": 1 },
-              $set: { "runStats.lastRunAt": new Date() },
-            }
-          );
-
+          replySent = true;
           console.log(
             `✅ Sent reply for keyword match "${auto.keywords.join(", ")}"`
           );
         } catch (err) {
           console.error("Reply failed", err.message);
         }
+      }
+
+      // 6️⃣ send DM if configured
+      if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
+        try {
+          await sendInstagramDM(
+            c.fromUserId,
+            auto.dm.message,
+            fbPageId,
+            accessToken,
+            auto.dm.button
+          );
+          dmSent = true;
+          console.log(`✅ Sent DM to user ${c.fromUsername || c.fromUserId}`);
+        } catch (err) {
+          console.error("DM failed", err.message);
+        }
+      }
+
+      // 7️⃣ record the interaction
+      if (replySent || dmSent) {
+        await RepliedComment.create({
+          commentId: c.commentId,
+          automationId: auto._id,
+          text: c.text,
+        });
+
+        const updateStats = {
+          $set: { "runStats.lastRunAt": new Date() },
+        };
+        
+        if (replySent) {
+          updateStats.$inc = { 
+            ...updateStats.$inc, 
+            "runStats.repliesSent": 1 
+          };
+        }
+        
+        if (dmSent) {
+          updateStats.$inc = { 
+            ...updateStats.$inc, 
+            "runStats.dmsSent": 1 
+          };
+        }
+
+        await Automation.updateOne({ _id: auto._id }, updateStats);
       }
     }
   }
