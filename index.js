@@ -4,8 +4,6 @@ import axios from "axios";
 import Automation from "./models/Automation.js";
 import RepliedComment from "./models/RepliedComment.js";
 import User from "./models/User.js";
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-
 
 const username = "jobswitchco";
 const password = "1q2unIeMxwn9IpUB";
@@ -91,32 +89,25 @@ async function replyToComment(commentId, replyText, pageAccessToken) {
   }
 }
 
-
-
-
-
-async function sendPrivateReplyViaMessages(igUserId, commentId, text, pageAccessToken) {
-  const url = `https://graph.facebook.com/v24.0/${igUserId}/messages`;
-  const payload = {
-    recipient: { comment_id: String(commentId) }, // NOTE: comment_id, not id
-    message: { text }
-  };
+// --- IG DM helper ---
+// --- IG Private Reply helper (first touch off a comment)
+async function sendPrivateReply(commentId, message, pageAccessToken) {
   try {
-    const { data } = await axios.post(url, payload, {
-      params: { access_token: pageAccessToken } // token as query param (or use Authorization header)
-    });
-    console.log("✅ Private Reply (IG) OK", data);
-    return { success: true, data };
+    const url = `https://graph.facebook.com/v24.0/${commentId}/private_replies`;
+    const res = await axios.post(
+      url,
+      { message },
+      { params: { access_token: pageAccessToken } } // Graph prefers token in params
+    );
+    console.log("✅ Private reply sent", res.data);
+    return { success: true, data: res.data };
   } catch (err) {
-    console.error("❌ Private Reply (IG) ERROR",
-      JSON.stringify(err.response?.data || { message: err.message }, null, 2));
-    const e = err.response?.data?.error || {};
-    return { success: false, code: e.code, sub: e.error_subcode, msg: e.message };
+    const code = err.response?.data?.error?.code;
+    const sub = err.response?.data?.error?.error_subcode;
+    console.error("❌ Private reply failed", err.response?.data || err.message);
+    return { success: false, code, sub, raw: err.response?.data };
   }
 }
-
-
-
 
 
 // --- Pub/Sub push handler ---
@@ -197,57 +188,26 @@ app.post("/pubsub", async (req, res) => {
         }
       }
 
-
-
-// 6️⃣ ManyChat-style: ONE Private Reply via /{ig_user_id}/messages, then STOP
+      // 6️⃣ send DM if configured
+    // 6️⃣ send DM/private reply if configured
 if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
   try {
-    // A) within 7 days
-    const isFresh = (Date.now() - new Date(c.timestamp).getTime()) < SEVEN_DAYS_MS;
-    // if (!isFresh) {
-    //   console.log("⛔ Skipping private reply: comment >7 days", c.commentId);
-    // } else {
-      // B) dedupe — don't send twice for the same comment+automation
-      const alreadyPR = await RepliedComment.findOne({
-        commentId: c.commentId,
-        automationId: auto._id,
-        type: "private_reply"
-      });
-      if (alreadyPR) {
-        console.log("⛔ Private reply already sent for comment", c.commentId);
-      } else {
-        // C) resolve the IG user id tied to this Page token
-        // const igUserId = await getIgUserIdForPage(fbPageId, accessToken);
+    // Use a Private Reply first (one-per-comment, within 7 days)
+    const pr = await sendPrivateReply(c.commentId, auto.dm.message, accessToken);
 
-        // D) send private reply (delivered as DM)
-        const pr = await sendPrivateReplyViaMessages(
-          '17841402138259768',
-          c.commentId,
-          auto.dm.message,
-          accessToken
-        );
-
-        if (pr.success) {
-          dmSent = true; // count it in your stats if you want
-          await RepliedComment.create({
-            commentId: c.commentId,
-            automationId: auto._id,
-            text: c.text,
-            type: "private_reply"
-          });
-          console.log("✅ Private reply sent; waiting for user to respond in DM.");
-        } else {
-          console.warn("⚠️ Private reply failed; NOT attempting /me/messages.", {
-            code: pr.code, sub: pr.sub, msg: pr.msg
-          });
-        }
-      }
-    // }
+    if (pr.success) {
+      dmSent = true; // count as a sent DM for your stats
+    } else if (pr.code === 100 /* validation */) {
+      // Possibly already used private reply for this comment or window elapsed
+      console.warn("⚠️ Private reply not allowed for this comment now.");
+    } else if (pr.code === 10 && pr.sub === 2534022) {
+      // Shouldn't happen with private_replies, but keep for completeness
+      console.warn("⚠️ Window issue.");
+    }
   } catch (err) {
     console.error("DM/Private Reply failed", err.message);
   }
 }
-
 
 
       // 7️⃣ record the interaction
