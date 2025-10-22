@@ -217,7 +217,7 @@ if (auto.dm?.enabled && auto.dm?.message && c.fromUserId) {
         console.log("⛔ Private reply already sent for comment", c.commentId);
       } else {
         // C) resolve the IG user id tied to this Page token
-        const igUserId = await getIgUserIdForPage(fbPageId, accessToken);
+        // const igUserId = await getIgUserIdForPage(fbPageId, accessToken);
 
         // D) send private reply (delivered as DM)
         const pr = await sendPrivateReplyViaMessages(
