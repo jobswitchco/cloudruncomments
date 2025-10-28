@@ -339,49 +339,120 @@ app.post("/pubsub", async (req, res) => {
             channel: "private",
           });
 
+          // if (proceed) {
+          //   try {
+          //     const data = await sendPrivateReply({
+          //       fbPageId,
+          //       commentId: c.commentId,
+          //       message: auto.dm.message,
+          //       pageAccessToken: accessToken,
+          //     });
+          //     privateSent = true;
+          //     await finalizeAction({
+          //       automationId: auto._id,
+          //       commentId: c.commentId,
+          //       channel: "private",
+          //       ok: true,
+          //     });
+          //  await RepliedComment.create({
+          //       commentId: c.commentId,
+          //       automationId: auto._id,
+          //       channel: "private",
+          //       text: c.text,  // Original comment text
+          //       sentMessage: auto.dm.message,  // Add this field to store the DM text
+          //       status: "sent",
+          //     });
+          //     console.log("✅ Private reply sent", { commentId: c.commentId, data });
+          //   } catch (err) {
+          //     console.error("❌ Private reply failed", err.details || err.message);
+          //     await finalizeAction({
+          //       automationId: auto._id,
+          //       commentId: c.commentId,
+          //       channel: "private",
+          //       ok: false,
+          //       error: err.details || { message: err.message },
+          //     });
+          //     await RepliedComment.create({
+          //       commentId: c.commentId,
+          //       automationId: auto._id,
+          //       channel: "private",
+          //       text: c.text,
+          //       status: "failed",
+          //       error: err.details || { message: err.message },
+          //     });
+          //   }
+          // } 
+
           if (proceed) {
-            try {
-              const data = await sendPrivateReply({
-                fbPageId,
-                commentId: c.commentId,
-                message: auto.dm.message,
-                pageAccessToken: accessToken,
-              });
-              privateSent = true;
-              await finalizeAction({
-                automationId: auto._id,
-                commentId: c.commentId,
-                channel: "private",
-                ok: true,
-              });
-           await RepliedComment.create({
-                commentId: c.commentId,
-                automationId: auto._id,
-                channel: "private",
-                text: c.text,  // Original comment text
-                sentMessage: auto.dm.message,  // Add this field to store the DM text
-                status: "sent",
-              });
-              console.log("✅ Private reply sent", { commentId: c.commentId, data });
-            } catch (err) {
-              console.error("❌ Private reply failed", err.details || err.message);
-              await finalizeAction({
-                automationId: auto._id,
-                commentId: c.commentId,
-                channel: "private",
-                ok: false,
-                error: err.details || { message: err.message },
-              });
-              await RepliedComment.create({
-                commentId: c.commentId,
-                automationId: auto._id,
-                channel: "private",
-                text: c.text,
-                status: "failed",
-                error: err.details || { message: err.message },
-              });
-            }
-          } else {
+  try {
+    const data = await sendPrivateReply({
+      fbPageId,
+      commentId: c.commentId,
+      message: auto.dm.message,
+      pageAccessToken: accessToken,
+    });
+
+    // 🔹 Fetch user details using their IGSID (c.fromUserId)
+    const userDetailsUrl = `https://graph.facebook.com/v21.0/${c.fromUserId}`;
+    const { data: userDetails } = await axios.get(userDetailsUrl, {
+      params: {
+        access_token: accessToken,
+        fields:
+          "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
+      },
+    });
+
+    privateSent = true;
+    await finalizeAction({
+      automationId: auto._id,
+      commentId: c.commentId,
+      channel: "private",
+      ok: true,
+    });
+
+    // ✅ Store extended user info in RepliedComment
+    await RepliedComment.create({
+      commentId: c.commentId,
+      automationId: auto._id,
+      channel: "private",
+      text: c.text,
+      sentMessage: auto.dm.message,
+      status: "sent",
+      igUserId: userDetails.id, // IGSID
+      username: userDetails.username,
+      profilePic: userDetails.profile_pic,
+      followsBusiness: userDetails.is_user_follow_business,
+      businessFollowsUser: userDetails.is_business_follow_user,
+    });
+
+    console.log("✅ Private reply + user details saved", {
+      commentId: c.commentId,
+      user: userDetails,
+    });
+  } catch (err) {
+    console.error("❌ Private reply failed", err.details || err.message);
+    await finalizeAction({
+      automationId: auto._id,
+      commentId: c.commentId,
+      channel: "private",
+      ok: false,
+      error: err.details || { message: err.message },
+    });
+    await RepliedComment.create({
+      commentId: c.commentId,
+      automationId: auto._id,
+      channel: "private",
+      text: c.text,
+      status: "failed",
+      error: err.details || { message: err.message },
+    });
+  }
+}
+
+          
+          
+          
+          else {
             console.log("↩️ Skipping private (already reserved/sent)", c.commentId);
           }
         }

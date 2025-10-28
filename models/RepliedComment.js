@@ -12,6 +12,11 @@ const RepliedCommentSchema = new Schema(
     sentMessage: { type: String },
     error: { type: Object },
     type: { type: String }, // keep your existing if you use it elsewhere
+    igUserId: String, // IGSID
+    username: String,
+    profilePic: String,
+    followsBusiness: Boolean,
+    businessFollowsUser: Boolean,
   },
   { timestamps: true }
 );
