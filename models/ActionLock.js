@@ -25,7 +25,7 @@ const ActionLockSchema = new Schema(
 );
 
 // Unique gate: never perform the same (automation, comment, channel) twice
-ActionLockSchema.index({ automationId: 1, commentId: 1, channel: 1 }, { unique: true });
+ActionLockSchema.index({ automationId: 1, commentId: 1, channel: 1 });
 
 const ActionLock =
   mongoose.models.ActionLock ||
