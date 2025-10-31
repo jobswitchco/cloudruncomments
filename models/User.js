@@ -14,21 +14,24 @@ const User_Schema = new Schema({
   handleUserName: { type: String },
   
   instagramConnected: { type: Boolean, default: false },
-  fbPageId: { type: String, index: true, required: true },
   igUserId: { type: String },
   igId: { type: String },
   igName: { type: String },
   igUsername: { type: String },
+  fbPageId: { type: String },
   igProfilePic: { type: String },
   igFollowersCount: { type: Number },
   igFollowsCount: { type: Number },
   igMediaCount: { type: Number },
   fbLongLivedToken: { type: String },
-  fbTokenExpiry: { type: Date },
+  fbLongLivedTokenExpiry: { type: Date },
+  fbLastRefreshAt: { type: Date },
   igBiography: {type : String},
   fbPageAccessToken: {type : String},
   has_profile_pic_ig: { type: Boolean, default: false },
-  primary: { type: Boolean, default: false }, 
+  fbNeedsReconnect: { type: Boolean },
+
+  automationFeedSubscribed : {type : Boolean, default : false },
 
 
   demo_logged_in: { type: Boolean },
@@ -52,10 +55,6 @@ const User_Schema = new Schema({
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date },
 });
-
-User_Schema.index({ fbPageId: 1 });
-User_Schema.index({ fbPageAccessToken: 1 }); // optional; often helpful
-
 
 // Register model as "User" but use existing collection "users"
 const User = mongoose.models.User || mongoose.model("User", User_Schema, "users");

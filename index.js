@@ -8,18 +8,6 @@ import RepliedComment from "./models/RepliedComment.js";
 import User from "./models/User.js";
 import ActionLock from "./models/ActionLock.js";
 
-// const {
-//   MONGO_URI = "",
-//   PORT = 8080,
-//   NODE_ENV = "production",
-//   // Optionally validate Pub/Sub push with a shared secret:
-//   PUBSUB_TOKEN = "", // if you set one, require it via header in /pubsub
-// } = process.env;
-
-// if (!MONGO_URI) {
-//   console.error("❌ MONGO_URI env var is required");
-//   process.exit(1);
-// }
 
 
 const username = "jobswitchco";
@@ -111,6 +99,96 @@ async function extractCommentEvents(envelope) {
 
   return events;
 }
+
+const META_APP_ID = "1360956302356492";
+const META_APP_SECRET = "2b21c578035bd7b96b24ba43e4479a52";
+
+const FB_API = "https://graph.facebook.com/v24.0";
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function daysLeft(expiry) {
+  if (!expiry) return -Infinity;
+  return Math.floor((new Date(expiry).getTime() - Date.now()) / DAY_MS);
+}
+
+async function refreshFbTokensForUser(user) {
+  // Re-exchange the current long-lived user token
+  const llResp = await axios.get(`${FB_API}/oauth/access_token`, {
+    params: {
+      grant_type: "fb_exchange_token",
+      client_id: process.env.META_APP_ID || META_APP_ID,
+      client_secret: process.env.META_APP_SECRET || META_APP_SECRET,
+      fb_exchange_token: user.fbLongLivedToken,
+    },
+  });
+
+  const newUserLL = llResp.data?.access_token;
+  if (!newUserLL) throw new Error("Failed to refresh long-lived user token");
+
+  // If expires_in missing → set to 58 days
+  const newUserExpiry = new Date(Date.now() + 58 * DAY_MS);
+
+  // Re-fetch Page token using the fresh user token
+  let newPageToken = user.fbPageAccessToken || null;
+  if (user.fbPageId) {
+    const pageTokResp = await axios.get(`${FB_API}/${user.fbPageId}`, {
+      params: { fields: "access_token", access_token: newUserLL },
+    });
+    newPageToken = pageTokResp.data?.access_token || newPageToken;
+  }
+
+  await User.findByIdAndUpdate(user._id, {
+    fbLongLivedToken: newUserLL,
+    fbLongLivedTokenExpiry: newUserExpiry,
+    fbPageAccessToken: newPageToken,
+    fbLastRefreshAt: new Date(),
+    fbNeedsReconnect: false,
+    updated_at: new Date(),
+  });
+
+  return {
+    fbPageAccessToken: newPageToken,
+    fbPageId: user.fbPageId,
+  };
+}
+
+/**
+ * Ensure we have a fresh page token for a user.
+ * - If fbLongLivedTokenExpiry < 28 days (or missing), refresh both tokens.
+ * - Otherwise return existing tokens.
+ */
+async function ensureFreshPageTokenForUser(userId) {
+  const user = await User.findById(userId)
+    .select("_id instagramConnected fbLongLivedToken fbLongLivedTokenExpiry fbPageId fbPageAccessToken")
+    .lean();
+
+  if (!user || !user.instagramConnected) return { fbPageAccessToken: null, fbPageId: null };
+
+  // If we don't even have a long-lived token, we can't proceed
+  if (!user.fbLongLivedToken) return { fbPageAccessToken: null, fbPageId: user.fbPageId || null };
+
+  const remain = daysLeft(user.fbLongLivedTokenExpiry);
+
+  if (remain < 28) {
+    try {
+      return await refreshFbTokensForUser(user);
+    } catch (e) {
+      console.error("⚠️ FB refresh failed:", e?.response?.data || e.message || e);
+      // Keep existing tokens if refresh fails; the Graph call may still work if not expired yet
+      return {
+        fbPageAccessToken: user.fbPageAccessToken || null,
+        fbPageId: user.fbPageId || null,
+      };
+    }
+  }
+
+  // Still plenty of time
+  return {
+    fbPageAccessToken: user.fbPageAccessToken || null,
+    fbPageId: user.fbPageId || null,
+  };
+}
+
 
 
 
@@ -246,6 +324,8 @@ app.post("/pubsub", async (req, res) => {
     const commentEvents = await extractCommentEvents(envelope);
     if (!commentEvents.length) return res.status(204).send();
 
+    const userTokenCache = new Map();
+
     for (const c of commentEvents) {
       // 1) Find matching automation(s)
       const autos = await Automation.find({
@@ -265,11 +345,20 @@ app.post("/pubsub", async (req, res) => {
         if (!matched) continue;
 
         // 2) Load user tokens
-        const user = await User.findById(auto.userId).lean();
-        const accessToken = user?.fbPageAccessToken;
-        const fbPageId = user?.fbPageId;
+        // const user = await User.findById(auto.userId).lean();
+
+         const key = String(auto.userId);
+        let creds = userTokenCache.get(key);
+        if (!creds) {
+          creds = await ensureFreshPageTokenForUser(auto.userId);
+          userTokenCache.set(key, creds);
+        }
+
+       const accessToken = creds.fbPageAccessToken;
+        const fbPageId = creds.fbPageId;
+
         if (!accessToken || !fbPageId) {
-          console.warn("⚠️ Missing fbPageAccessToken/fbPageId for user", String(auto.userId));
+          console.warn("⚠️ Missing fbPageAccessToken/fbPageId for user", key);
           continue;
         }
 
@@ -339,49 +428,6 @@ app.post("/pubsub", async (req, res) => {
             channel: "private",
           });
 
-          // if (proceed) {
-          //   try {
-          //     const data = await sendPrivateReply({
-          //       fbPageId,
-          //       commentId: c.commentId,
-          //       message: auto.dm.message,
-          //       pageAccessToken: accessToken,
-          //     });
-          //     privateSent = true;
-          //     await finalizeAction({
-          //       automationId: auto._id,
-          //       commentId: c.commentId,
-          //       channel: "private",
-          //       ok: true,
-          //     });
-          //  await RepliedComment.create({
-          //       commentId: c.commentId,
-          //       automationId: auto._id,
-          //       channel: "private",
-          //       text: c.text,  // Original comment text
-          //       sentMessage: auto.dm.message,  // Add this field to store the DM text
-          //       status: "sent",
-          //     });
-          //     console.log("✅ Private reply sent", { commentId: c.commentId, data });
-          //   } catch (err) {
-          //     console.error("❌ Private reply failed", err.details || err.message);
-          //     await finalizeAction({
-          //       automationId: auto._id,
-          //       commentId: c.commentId,
-          //       channel: "private",
-          //       ok: false,
-          //       error: err.details || { message: err.message },
-          //     });
-          //     await RepliedComment.create({
-          //       commentId: c.commentId,
-          //       automationId: auto._id,
-          //       channel: "private",
-          //       text: c.text,
-          //       status: "failed",
-          //       error: err.details || { message: err.message },
-          //     });
-          //   }
-          // } 
 
           if (proceed) {
   try {
