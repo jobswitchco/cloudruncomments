@@ -240,25 +240,79 @@ async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
   }
 }
 
-async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken }) {
+// async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken }) {
+ 
+//   const url = `https://graph.facebook.com/v24.0/${fbPageId}/messages`;
+//   const { data, status } = await http.post(
+//     url,
+//     { recipient: { comment_id: String(commentId) }, message: { text: message } },
+//     { params: { access_token: pageAccessToken } }
+//   );
+
+//     console.log("✅ Private message to comment", commentId);
+
+
+//   if (status >= 400) {
+//     const err = new Error("Private reply failed");
+//     err.details = data?.error || data;
+//     throw err;
+//   }
+//   return data;
+// }
+
+async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken, button }) {
   // One private reply per comment, within Meta window.
+  // button: { text: 'Download', url: 'https://...' } or undefined
+
   const url = `https://graph.facebook.com/v24.0/${fbPageId}/messages`;
-  const { data, status } = await http.post(
-    url,
-    { recipient: { comment_id: String(commentId) }, message: { text: message } },
-    { params: { access_token: pageAccessToken } }
-  );
 
-    console.log("✅ Private message to comment", commentId);
+  // Build message body: use a button template when a valid URL/button exists
+  const hasButton = button && typeof button.url === "string" && button.url.trim();
 
+  const msgBody = hasButton
+    ? {
+        recipient: { comment_id: String(commentId) },
+        message: {
+          attachment: {
+            type: "template",
+            payload: {
+              template_type: "button",
+              text: message,
+              buttons: [
+                {
+                  type: "web_url",
+                  url: button.url,
+                  title: button.text || "Open link",
+                },
+              ],
+            },
+          },
+        },
+      }
+    : {
+        recipient: { comment_id: String(commentId) },
+        message: { text: message },
+      };
+
+  // Debug log — remove in production if needed
+  console.log("-> sendPrivateReply payload:", JSON.stringify(msgBody));
+
+  const { data, status } = await http.post(url, msgBody, {
+    params: { access_token: pageAccessToken },
+  });
 
   if (status >= 400) {
     const err = new Error("Private reply failed");
     err.details = data?.error || data;
+    console.error("❌ sendPrivateReply error:", err.details || err.message);
     throw err;
   }
+
+  console.log("✅ Private message to comment", commentId, data);
   return data;
 }
+
+
 
 // Reserve an action atomically (idempotency gate)
 async function reserveAction({ automationId, commentId, channel }) {
@@ -431,11 +485,12 @@ app.post("/pubsub", async (req, res) => {
 
           if (proceed) {
   try {
-    const data = await sendPrivateReply({
-      fbPageId,
+   const data = await sendPrivateReply({
+     fbPageId,
       commentId: c.commentId,
       message: auto.dm.message,
       pageAccessToken: accessToken,
+      button: auto.dm?.button, // pass the configured button (if any)
     });
 
     // 🔹 Fetch user details using their IGSID (c.fromUserId)
