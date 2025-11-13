@@ -716,6 +716,7 @@ app.post("/pubsub-messaging", async (req, res) => {
 });
 
 async function handlePostback(event) {
+  console.log("🔍 DEBUG Full postback event:", JSON.stringify(event, null, 2));
   const senderId = event.sender?.id;
   const payload = event.postback?.payload;
   const title = event.postback?.title;
