@@ -693,19 +693,27 @@ app.post("/pubsub-messaging", async (req, res) => {
     for (const entry of entries) {
       const messaging = entry?.messaging || [];
       
-      for (const event of messaging) {
-        if (event.postback) {
-          await handlePostback(event);
-        }
-        
-        if (event.message && !event.message.quick_reply) {
-          await handleTextMessage(event);
-        }
-        
-        if (event.reaction) {
-          console.log("👍 Reaction received:", event.reaction);
-        }
-      }
+   for (const event of messaging) {
+  if (event.postback) {
+    await handlePostback(event);
+    continue;
+  }
+
+  if (event.message && event.message.quick_reply) {
+    // quick replies need their own handler
+    await handleQuickReply(event);
+    continue;
+  }
+
+  if (event.message && !event.message.quick_reply) {
+    await handleTextMessage(event);
+  }
+
+  if (event.reaction) {
+    console.log("👍 Reaction received:", event.reaction);
+  }
+}
+
     }
 
     return res.status(204).send();
@@ -817,6 +825,111 @@ async function handlePostback(event) {
     await conversation.save();
   }
 }
+
+async function handleQuickReply(event) {
+  console.log("🔍 DEBUG Full quick_reply event:", JSON.stringify(event, null, 2));
+  const senderId = event.sender?.id;
+  const payload = event.message?.quick_reply?.payload;
+  const text = event.message?.text;
+
+  console.log("➡ Quick reply received", { senderId, payload, text });
+
+  if (!senderId || !payload) {
+    console.warn("⚠️ Missing senderId or payload in quick_reply");
+    return;
+  }
+
+  // Find active conversation for this IG user
+  const conversation = await ConversationState.findOne({
+    igUserId: senderId,
+    status: "active",
+    expiresAt: { $gt: new Date() },
+  }).sort({ startedAt: -1 });
+
+  if (!conversation) {
+    console.log("ℹ️ No active conversation found for user", senderId);
+    return;
+  }
+
+  const currentFlowId = conversation.currentFlowId;
+  const flowConfig = conversation.flowConfig;
+
+  const currentNode =
+    currentFlowId === "initial"
+      ? flowConfig.initial
+      : flowConfig.flows?.[currentFlowId];
+
+  if (!currentNode) {
+    console.error("❌ Current flow node not found:", currentFlowId);
+    conversation.markError(new Error(`Flow node ${currentFlowId} not found`));
+    await conversation.save();
+    return;
+  }
+
+  // Map payload to next flow id
+  const nextFlowId = currentNode.next_actions?.[payload];
+
+  if (!nextFlowId) {
+    console.log("🏁 End of conversation - no next flow for quick_reply payload:", payload);
+    conversation.markCompleted();
+    await conversation.save();
+
+    await Automation.updateOne(
+      { _id: conversation.automationId },
+      { $inc: { "runStats.flowConversationsCompleted": 1 } }
+    );
+    return;
+  }
+
+  const nextNode = flowConfig.flows?.[nextFlowId];
+
+  if (!nextNode) {
+    console.error("❌ Next flow node not found:", nextFlowId);
+    conversation.markError(new Error(`Next flow ${nextFlowId} not found`));
+    await conversation.save();
+    return;
+  }
+
+  // Ensure tokens
+  const creds = await ensureFreshPageTokenForUser(conversation.userId);
+  const accessToken = creds.fbPageAccessToken;
+  const fbPageId = creds.fbPageId;
+
+  if (!accessToken || !fbPageId) {
+    console.error("⚠️ Missing tokens for user", conversation.userId);
+    return;
+  }
+
+  try {
+    // Send the next node (button/generic/text/etc.)
+    await sendFlowMessage({
+      fbPageId,
+      commentId: conversation.commentId,
+      flowNode: nextNode,
+      pageAccessToken: accessToken,
+    });
+
+    console.log("✅ Sent next flow message for quick_reply:", nextFlowId);
+
+    conversation.addHistory({
+      flowId: nextFlowId,
+      flowName: nextFlowId,
+      messageSent: nextNode.message,
+      userReply: text,
+      userPayload: payload,
+    });
+
+    conversation.currentFlowId = nextFlowId;
+    await conversation.save();
+
+    console.log("✅ Conversation state updated (quick_reply)");
+  } catch (err) {
+    console.error("❌ Failed to send next message (quick_reply):", err);
+    conversation.markError(err);
+    await conversation.save();
+  }
+}
+
 
 async function handleTextMessage(event) {
   const senderId = event.sender?.id;
