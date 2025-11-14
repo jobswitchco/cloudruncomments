@@ -19,7 +19,7 @@ const MONGO_URI =
   "@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob";
 
 const PORT = 8080;
-const PUBSUB_TOKEN = "";
+const PUBSUB_TOKEN = process.env.PUBSUB_TOKEN || "";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -320,6 +320,8 @@ async function sendGenericTemplate({ fbPageId, commentId, cards, pageAccessToken
 async function sendFlowMessage({ fbPageId, commentId, flowNode, pageAccessToken }) {
   const { type, message, quick_replies, buttons, cards, media_url } = flowNode;
 
+  console.log("🔄 sendFlowMessage called", { type, commentId, hasQuickReplies: !!quick_replies, hasButtons: !!buttons });
+
   switch (type) {
     case "text":
       return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
@@ -432,9 +434,287 @@ async function finalizeAction({ automationId, commentId, channel, ok, error }) {
   await ActionLock.updateOne({ automationId, commentId, channel }, { $set: update });
 }
 
-// ========== PUB/SUB ENDPOINT 1: COMMENTS (EXISTING) ==========
+// ---------- Message Handler Functions ----------
+
+async function handlePostback(event) {
+  console.log("🔍 DEBUG Full postback event:", JSON.stringify(event, null, 2));
+  const senderId = event.sender?.id;
+  const payload = event.postback?.payload;
+  const title = event.postback?.title;
+
+  console.log("🔘 Postback received", { senderId, payload, title });
+
+  if (!senderId || !payload) {
+    console.warn("⚠️ Missing senderId or payload in postback");
+    return;
+  }
+
+  // Find active conversation
+  const conversation = await ConversationState.findOne({
+    igUserId: senderId,
+    status: "active",
+    expiresAt: { $gt: new Date() },
+  }).sort({ startedAt: -1 });
+
+  if (!conversation) {
+    console.log("ℹ️ No active conversation found for user", senderId);
+    return;
+  }
+
+  console.log("✅ Found active conversation:", conversation._id.toString());
+
+  const currentFlowId = conversation.currentFlowId;
+  const flowConfig = conversation.flowConfig;
+  
+  // Get current node
+  const currentNode =
+    currentFlowId === "initial"
+      ? flowConfig.initial
+      : flowConfig.flows?.[currentFlowId];
+
+  if (!currentNode) {
+    console.error("❌ Current flow node not found:", currentFlowId);
+    conversation.markError(new Error(`Flow node ${currentFlowId} not found`));
+    await conversation.save();
+    return;
+  }
+
+  console.log("🔍 Current node:", { currentFlowId, type: currentNode.type, hasNextActions: !!currentNode.next_actions });
+  
+  // Handle next_actions as Map or plain object
+  let nextFlowId;
+  if (currentNode.next_actions instanceof Map) {
+    nextFlowId = currentNode.next_actions.get(payload);
+  } else {
+    nextFlowId = currentNode.next_actions?.[payload];
+  }
+
+  console.log("🔍 Next flow lookup:", { payload, nextFlowId, availableActions: Object.keys(currentNode.next_actions || {}) });
+
+  if (!nextFlowId) {
+    console.log("🏁 End of conversation - no next flow for payload:", payload);
+    conversation.markCompleted();
+    await conversation.save();
+
+    await Automation.updateOne(
+      { _id: conversation.automationId },
+      { $inc: { "runStats.flowConversationsCompleted": 1 } }
+    );
+
+    return;
+  }
+
+  // Get next node
+  let nextNode;
+  if (flowConfig.flows instanceof Map) {
+    nextNode = flowConfig.flows.get(nextFlowId);
+  } else {
+    nextNode = flowConfig.flows?.[nextFlowId];
+  }
+
+  if (!nextNode) {
+    console.error("❌ Next flow node not found:", nextFlowId);
+    conversation.markError(new Error(`Next flow ${nextFlowId} not found`));
+    await conversation.save();
+    return;
+  }
+
+  console.log("✅ Found next node:", { nextFlowId, type: nextNode.type });
+
+  // Get credentials with error handling
+  let creds;
+  try {
+    creds = await ensureFreshPageTokenForUser(conversation.userId);
+  } catch (err) {
+    console.error("❌ Failed to get tokens:", err.message);
+    conversation.markError(err);
+    await conversation.save();
+    return;
+  }
+
+  const accessToken = creds.fbPageAccessToken;
+  const fbPageId = creds.fbPageId;
+
+  if (!accessToken || !fbPageId) {
+    console.error("⚠️ Missing tokens", { fbPageId, hasToken: !!accessToken });
+    conversation.markError(new Error("Missing access tokens"));
+    await conversation.save();
+    return;
+  }
+
+  // Send next message
+  try {
+    await sendFlowMessage({
+      fbPageId,
+      commentId: conversation.commentId,
+      flowNode: nextNode,
+      pageAccessToken: accessToken,
+    });
+
+    console.log("✅ Sent next flow message:", nextFlowId);
+
+    // Update conversation history
+    conversation.addHistory({
+      flowId: nextFlowId,
+      flowName: nextFlowId,
+      messageSent: nextNode.message,
+      userReply: title,
+      userPayload: payload,
+    });
+
+    conversation.currentFlowId = nextFlowId;
+    await conversation.save();
+
+    console.log("✅ Conversation state updated");
+  } catch (err) {
+    console.error("❌ Failed to send next message:", err.message, err.details || err.stack);
+    conversation.markError(err);
+    await conversation.save();
+  }
+}
+
+async function handleQuickReply(event) {
+  console.log("🔍 DEBUG Full quick_reply event:", JSON.stringify(event, null, 2));
+  const senderId = event.sender?.id;
+  const payload = event.message?.quick_reply?.payload;
+  const text = event.message?.text;
+
+  console.log("➡️ Quick reply received", { senderId, payload, text });
+
+  if (!senderId || !payload) {
+    console.warn("⚠️ Missing senderId or payload in quick_reply");
+    return;
+  }
+
+  // Find active conversation
+  const conversation = await ConversationState.findOne({
+    igUserId: senderId,
+    status: "active",
+    expiresAt: { $gt: new Date() },
+  }).sort({ startedAt: -1 });
+
+  if (!conversation) {
+    console.log("ℹ️ No active conversation found for user", senderId);
+    return;
+  }
+
+  console.log("✅ Found active conversation:", conversation._id.toString());
+
+  const currentFlowId = conversation.currentFlowId;
+  const flowConfig = conversation.flowConfig;
+
+  const currentNode =
+    currentFlowId === "initial"
+      ? flowConfig.initial
+      : flowConfig.flows?.[currentFlowId];
+
+  if (!currentNode) {
+    console.error("❌ Current flow node not found:", currentFlowId);
+    conversation.markError(new Error(`Flow node ${currentFlowId} not found`));
+    await conversation.save();
+    return;
+  }
+
+  // Handle next_actions as Map or plain object
+  let nextFlowId;
+  if (currentNode.next_actions instanceof Map) {
+    nextFlowId = currentNode.next_actions.get(payload);
+  } else {
+    nextFlowId = currentNode.next_actions?.[payload];
+  }
+
+  if (!nextFlowId) {
+    console.log("🏁 End of conversation - no next flow for quick_reply payload:", payload);
+    conversation.markCompleted();
+    await conversation.save();
+
+    await Automation.updateOne(
+      { _id: conversation.automationId },
+      { $inc: { "runStats.flowConversationsCompleted": 1 } }
+    );
+    return;
+  }
+
+  // Get next node
+  let nextNode;
+  if (flowConfig.flows instanceof Map) {
+    nextNode = flowConfig.flows.get(nextFlowId);
+  } else {
+    nextNode = flowConfig.flows?.[nextFlowId];
+  }
+
+  if (!nextNode) {
+    console.error("❌ Next flow node not found:", nextFlowId);
+    conversation.markError(new Error(`Next flow ${nextFlowId} not found`));
+    await conversation.save();
+    return;
+  }
+
+  // Get credentials
+  let creds;
+  try {
+    creds = await ensureFreshPageTokenForUser(conversation.userId);
+  } catch (err) {
+    console.error("❌ Failed to get tokens:", err.message);
+    conversation.markError(err);
+    await conversation.save();
+    return;
+  }
+
+  const accessToken = creds.fbPageAccessToken;
+  const fbPageId = creds.fbPageId;
+
+  if (!accessToken || !fbPageId) {
+    console.error("⚠️ Missing tokens for user", conversation.userId);
+    conversation.markError(new Error("Missing access tokens"));
+    await conversation.save();
+    return;
+  }
+
+  try {
+    // Send next message
+    await sendFlowMessage({
+      fbPageId,
+      commentId: conversation.commentId,
+      flowNode: nextNode,
+      pageAccessToken: accessToken,
+    });
+
+    console.log("✅ Sent next flow message for quick_reply:", nextFlowId);
+
+    conversation.addHistory({
+      flowId: nextFlowId,
+      flowName: nextFlowId,
+      messageSent: nextNode.message,
+      userReply: text,
+      userPayload: payload,
+    });
+
+    conversation.currentFlowId = nextFlowId;
+    await conversation.save();
+
+    console.log("✅ Conversation state updated (quick_reply)");
+  } catch (err) {
+    console.error("❌ Failed to send next message (quick_reply):", err.message, err.details || err.stack);
+    conversation.markError(err);
+    await conversation.save();
+  }
+}
+
+async function handleTextMessage(event) {
+  const senderId = event.sender?.id;
+  const text = event.message?.text;
+
+  console.log("💬 Text message received", { senderId, text });
+  
+  // You can implement conversation handling for freeform text here
+  // For now, just logging
+}
+
+// ========== PUB/SUB ENDPOINT 1: COMMENTS ==========
 app.post("/pubsub", async (req, res) => {
   try {
+    // Pub/Sub token verification (optional)
     if (PUBSUB_TOKEN) {
       const headerToken = req.get("X-Pubsub-Token");
       if (headerToken !== PUBSUB_TOKEN) {
@@ -444,12 +724,17 @@ app.post("/pubsub", async (req, res) => {
     }
 
     const msg = req.body?.message;
-    if (!msg?.data) return res.status(204).send();
+    if (!msg?.data) {
+      console.log("ℹ️ Empty Pub/Sub message (comments)");
+      return res.status(204).send();
+    }
 
+    // Decode Pub/Sub message
     let envelope;
     try {
       const json = Buffer.from(msg.data, "base64").toString("utf8");
       envelope = JSON.parse(json);
+      console.log("📨 Decoded comment event from Pub/Sub");
     } catch (e) {
       console.error("❌ Pub/Sub decode failed", e);
       return res.status(204).send();
@@ -457,7 +742,13 @@ app.post("/pubsub", async (req, res) => {
 
     await connectMongo();
     const commentEvents = await extractCommentEvents(envelope);
-    if (!commentEvents.length) return res.status(204).send();
+    
+    if (!commentEvents.length) {
+      console.log("ℹ️ No comment events to process");
+      return res.status(204).send();
+    }
+
+    console.log(`📬 Processing ${commentEvents.length} comment events`);
 
     const userTokenCache = new Map();
 
@@ -476,7 +767,13 @@ app.post("/pubsub", async (req, res) => {
       for (const auto of autos) {
         const normalizedKeywords = auto.keywords.map(normalize).filter(Boolean);
         const matched = normalizedKeywords.some((kw) => c.text.includes(kw));
-        if (!matched) continue;
+        
+        if (!matched) {
+          console.log("ℹ️ Comment doesn't match keywords", { text: c.text, keywords: normalizedKeywords });
+          continue;
+        }
+
+        console.log("✅ Keyword matched!", { text: c.text, automationId: auto._id });
 
         const key = String(auto.userId);
         let creds = userTokenCache.get(key);
@@ -593,6 +890,7 @@ app.post("/pubsub", async (req, res) => {
                 });
               }
 
+              // Fetch user details
               const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
               const { data: userDetails } = await axios.get(userDetailsUrl, {
                 params: {
@@ -625,7 +923,7 @@ app.post("/pubsub", async (req, res) => {
 
               console.log("✅ Private reply + user details saved");
             } catch (err) {
-              console.error("❌ Private reply failed", err.details || err.message);
+              console.error("❌ Private reply failed", err.details || err.message || err.stack);
               await finalizeAction({
                 automationId: auto._id,
                 commentId: c.commentId,
@@ -656,14 +954,17 @@ app.post("/pubsub", async (req, res) => {
 
     return res.status(204).send();
   } catch (err) {
-    console.error("❌ Unhandled /pubsub error", err.message);
+    console.error("❌ Unhandled /pubsub error", err.message, err.stack);
     return res.status(500).send("error");
   }
 });
 
-// ========== PUB/SUB ENDPOINT 2: MESSAGING (NEW) ==========
+// ========== PUB/SUB ENDPOINT 2: MESSAGING ==========
 app.post("/pubsub-messaging", async (req, res) => {
   try {
+    console.log("📨 /pubsub-messaging called");
+
+    // Pub/Sub token verification (optional)
     if (PUBSUB_TOKEN) {
       const headerToken = req.get("X-Pubsub-Token");
       if (headerToken !== PUBSUB_TOKEN) {
@@ -673,292 +974,79 @@ app.post("/pubsub-messaging", async (req, res) => {
     }
 
     const msg = req.body?.message;
-    if (!msg?.data) return res.status(204).send();
+    if (!msg?.data) {
+      console.log("ℹ️ Empty Pub/Sub message (messaging)");
+      return res.status(204).send();
+    }
 
+    // Decode Pub/Sub message (NO HMAC verification - already done in Cloud Function)
     let envelope;
     try {
       const json = Buffer.from(msg.data, "base64").toString("utf8");
       envelope = JSON.parse(json);
+      console.log("📨 Decoded Pub/Sub message:", JSON.stringify(envelope, null, 2));
     } catch (e) {
       console.error("❌ Pub/Sub decode failed (messaging)", e);
       return res.status(204).send();
     }
 
-    console.log("📨 Processing messaging event:", JSON.stringify(envelope, null, 2));
-
     await connectMongo();
 
     const entries = envelope?.body?.entry || [];
     
+    if (!entries.length) {
+      console.log("ℹ️ No entries in messaging event");
+      return res.status(204).send();
+    }
+    
     for (const entry of entries) {
       const messaging = entry?.messaging || [];
       
-for (const event of messaging) {
-  // Quick reply clicks come as POSTBACK events for quick_replies type
-  if (event.postback) {
-    console.log("🔘 Postback (includes quick_reply clicks):", event.postback);
-    await handlePostback(event);
-    continue;
-  }
+      console.log(`📬 Processing ${messaging.length} messaging events`);
+      
+      for (const event of messaging) {
+        console.log("🔍 Event type check:", {
+          hasPostback: !!event.postback,
+          hasQuickReply: !!event.message?.quick_reply,
+          hasMessage: !!event.message,
+          hasReaction: !!event.reaction
+        });
 
-  // Text-based quick reply responses (rare, legacy format)
-  if (event.message?.quick_reply) {
-    console.log("➡️ Quick reply message:", event.message.quick_reply);
-    await handleQuickReply(event);
-    continue;
-  }
+        // Handle postback (includes quick reply clicks)
+        if (event.postback) {
+          await handlePostback(event);
+          continue;
+        }
 
-  // Regular text messages
-  if (event.message && !event.message.quick_reply) {
-    await handleTextMessage(event);
-  }
+        // Handle quick reply (legacy text-based format)
+        if (event.message && event.message.quick_reply) {
+          await handleQuickReply(event);
+          continue;
+        }
 
-  // Reactions
-  if (event.reaction) {
-    console.log("👍 Reaction received:", event.reaction);
-  }
-}
+        // Handle regular text message
+        if (event.message && !event.message.quick_reply) {
+          await handleTextMessage(event);
+        }
 
-
+        // Handle reaction
+        if (event.reaction) {
+          console.log("👍 Reaction received:", event.reaction);
+        }
+      }
     }
 
     return res.status(204).send();
   } catch (err) {
-    console.error("❌ Unhandled /pubsub-messaging error", err.message);
+    console.error("❌ Unhandled /pubsub-messaging error", err.message, err.stack);
     return res.status(500).send("error");
   }
 });
 
-async function handlePostback(event) {
-  console.log("🔍 DEBUG Full postback event:", JSON.stringify(event, null, 2));
-  const senderId = event.sender?.id;
-  const payload = event.postback?.payload;
-  const title = event.postback?.title;
-
-  console.log("🔘 Postback received", { senderId, payload, title });
-
-  if (!senderId || !payload) {
-    console.warn("⚠️ Missing senderId or payload in postback");
-    return;
-  }
-
-  const conversation = await ConversationState.findOne({
-    igUserId: senderId,
-    status: "active",
-    expiresAt: { $gt: new Date() },
-  }).sort({ startedAt: -1 });
-
-  if (!conversation) {
-    console.log("ℹ️ No active conversation found for user", senderId);
-    return;
-  }
-
-  console.log("✅ Found active conversation:", conversation._id);
-
-  
-  const currentFlowId = conversation.currentFlowId;
-  const flowConfig = conversation.flowConfig;
-  
-  const currentNode =
-    currentFlowId === "initial"
-      ? flowConfig.initial
-      : flowConfig.flows?.[currentFlowId];
-
-  if (!currentNode) {
-    console.error("❌ Current flow node not found:", currentFlowId);
-    conversation.markError(new Error(`Flow node ${currentFlowId} not found`));
-    await conversation.save();
-    return;
-  }
-
-  const nextFlowId = currentNode.next_actions?.[payload];
-
-  if (!nextFlowId) {
-    console.log("🏁 End of conversation - no next flow for payload:", payload);
-    conversation.markCompleted();
-    await conversation.save();
-
-    await Automation.updateOne(
-      { _id: conversation.automationId },
-      { $inc: { "runStats.flowConversationsCompleted": 1 } }
-    );
-
-    return;
-  }
-
-  const nextNode = flowConfig.flows?.[nextFlowId];
-
-  if (!nextNode) {
-    console.error("❌ Next flow node not found:", nextFlowId);
-    conversation.markError(new Error(`Next flow ${nextFlowId} not found`));
-    await conversation.save();
-    return;
-  }
-
-
-
-  // const creds = await ensureFreshPageTokenForUser(conversation.userId);
-
-   let creds;
-  try {
-    creds = await ensureFreshPageTokenForUser(conversation.userId);
-  } catch (err) {
-    console.error("❌ Failed to get tokens:", err.message);
-    return;
-  }
-  const accessToken = creds.fbPageAccessToken;
-  const fbPageId = creds.fbPageId;
-
-  if (!accessToken || !fbPageId) {
-    console.error("⚠️ Missing tokens for user", conversation.userId);
-    return;
-  }
-
-  try {
-    await sendFlowMessage({
-      fbPageId,
-      commentId: conversation.commentId,
-      flowNode: nextNode,
-      pageAccessToken: accessToken,
-    });
-
-    console.log("✅ Sent next flow message:", nextFlowId);
-
-    conversation.addHistory({
-      flowId: nextFlowId,
-      flowName: nextFlowId,
-      messageSent: nextNode.message,
-      userReply: title,
-      userPayload: payload,
-    });
-
-    conversation.currentFlowId = nextFlowId;
-    await conversation.save();
-
-    console.log("✅ Conversation state updated");
-  } catch (err) {
-    console.error("❌ Failed to send next message:", err);
-    conversation.markError(err);
-    await conversation.save();
-  }
-}
-
-async function handleQuickReply(event) {
-  console.log("🔍 DEBUG Full quick_reply event:", JSON.stringify(event, null, 2));
-  const senderId = event.sender?.id;
-  const payload = event.message?.quick_reply?.payload;
-  const text = event.message?.text;
-
-  console.log("➡ Quick reply received", { senderId, payload, text });
-
-  if (!senderId || !payload) {
-    console.warn("⚠️ Missing senderId or payload in quick_reply");
-    return;
-  }
-
-  // Find active conversation for this IG user
-  const conversation = await ConversationState.findOne({
-    igUserId: senderId,
-    status: "active",
-    expiresAt: { $gt: new Date() },
-  }).sort({ startedAt: -1 });
-
-  if (!conversation) {
-    console.log("ℹ️ No active conversation found for user", senderId);
-    return;
-  }
-
-  const currentFlowId = conversation.currentFlowId;
-  const flowConfig = conversation.flowConfig;
-
-  const currentNode =
-    currentFlowId === "initial"
-      ? flowConfig.initial
-      : flowConfig.flows?.[currentFlowId];
-
-  if (!currentNode) {
-    console.error("❌ Current flow node not found:", currentFlowId);
-    conversation.markError(new Error(`Flow node ${currentFlowId} not found`));
-    await conversation.save();
-    return;
-  }
-
-  // Map payload to next flow id
-  const nextFlowId = currentNode.next_actions?.[payload];
-
-  if (!nextFlowId) {
-    console.log("🏁 End of conversation - no next flow for quick_reply payload:", payload);
-    conversation.markCompleted();
-    await conversation.save();
-
-    await Automation.updateOne(
-      { _id: conversation.automationId },
-      { $inc: { "runStats.flowConversationsCompleted": 1 } }
-    );
-    return;
-  }
-
-  const nextNode = flowConfig.flows?.[nextFlowId];
-
-  if (!nextNode) {
-    console.error("❌ Next flow node not found:", nextFlowId);
-    conversation.markError(new Error(`Next flow ${nextFlowId} not found`));
-    await conversation.save();
-    return;
-  }
-
-  // Ensure tokens
-  const creds = await ensureFreshPageTokenForUser(conversation.userId);
-  const accessToken = creds.fbPageAccessToken;
-  const fbPageId = creds.fbPageId;
-
-  if (!accessToken || !fbPageId) {
-    console.error("⚠️ Missing tokens for user", conversation.userId);
-    return;
-  }
-
-  try {
-    // Send the next node (button/generic/text/etc.)
-    await sendFlowMessage({
-      fbPageId,
-      commentId: conversation.commentId,
-      flowNode: nextNode,
-      pageAccessToken: accessToken,
-    });
-
-    console.log("✅ Sent next flow message for quick_reply:", nextFlowId);
-
-    conversation.addHistory({
-      flowId: nextFlowId,
-      flowName: nextFlowId,
-      messageSent: nextNode.message,
-      userReply: text,
-      userPayload: payload,
-    });
-
-    conversation.currentFlowId = nextFlowId;
-    await conversation.save();
-
-    console.log("✅ Conversation state updated (quick_reply)");
-  } catch (err) {
-    console.error("❌ Failed to send next message (quick_reply):", err);
-    conversation.markError(err);
-    await conversation.save();
-  }
-}
-
-
-async function handleTextMessage(event) {
-  const senderId = event.sender?.id;
-  const text = event.message?.text;
-
-  console.log("💬 Text message received", { senderId, text });
-}
-
-// ---------- Health ----------
+// ---------- Health Check ----------
 app.get("/", (_req, res) => res.status(200).send("ok"));
 
-// ---------- Start ----------
+// ---------- Start Server ----------
 app.listen(PORT, () => {
   console.log(`🚀 Worker listening on ${PORT} at ${new Date().toISOString()}`);
 });
