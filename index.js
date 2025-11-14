@@ -422,104 +422,154 @@ async function finalizeAction({ automationId, commentId, channel, ok, error }) {
 
 // --- sendFlowMessage: accept explicit recipient object ---
 async function sendFlowMessage({ recipient, flowNode, pageAccessToken }) {
-  // recipient: { comment_id: "..." } OR { id: "<ig-user-id>" }
-  const { type, message, quick_replies, buttons, cards, media_url } = flowNode;
+  // recipient: { comment_id: "..." } OR { id: "<ig-user-id>" } OR both
+  const { type, message, quick_replies, buttons, cards, media_url } = flowNode || {};
 
   if (!recipient || (!recipient.comment_id && !recipient.id)) {
     throw new Error("recipient (comment_id or id) is required");
   }
 
-  const url = `${FB_API}/${recipient.id || recipient.comment_id}/messages`;
+  // Decide which target to call:
+  // - quick_replies should prefer user id (recipient.id) if present
+  // - for most templates (button/generic/media) prefer comment_id when present (to tie to comment)
+  // - fallback to whichever is available
+  let targetKey;
+  if (type === "quick_replies") {
+    targetKey = recipient.id ? "id" : "comment_id";
+  } else {
+    targetKey = recipient.comment_id ? "comment_id" : "id";
+  }
 
-  // Helper to post with http client
-  const post = (body) =>
-    http.post(`${FB_API}/${recipient.id || recipient.comment_id}/messages`, body, {
-      params: { access_token: pageAccessToken },
-    });
+  const target = recipient[targetKey];
+  const sendRecipient = targetKey === "id" ? { id: String(recipient.id) } : { comment_id: String(recipient.comment_id) };
+  const url = `${FB_API}/${target}/messages`;
+
+  // small debug log for request shape
+  console.log("→ sendFlowMessage", {
+    type,
+    targetKey,
+    target,
+    preview: {
+      message: typeof message === "string" ? message.slice(0, 200) : message,
+      quick_replies: (quick_replies || []).map((q) => q?.title).slice(0, 10),
+      buttonsCount: (buttons || []).length,
+      cardsCount: (cards || []).length,
+    },
+  });
+
+  // helper to do POST and normalize errors
+  const doPost = async (body) => {
+    const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
+    if (status >= 400) {
+      const err = new Error(`${type} message failed`);
+      err.details = data?.error || data;
+      throw err;
+    }
+    return data;
+  };
 
   switch (type) {
     case "text": {
-      const body = { recipient, message: { text: message } };
-      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
-      if (status >= 400) throw new Error("Text message failed");
-      return data;
+      const body = { recipient: sendRecipient, message: { text: message || "" } };
+      return await doPost(body);
     }
 
     case "quick_replies": {
-      if (!quick_replies || quick_replies.length === 0) throw new Error("quick_replies array is required");
+      if (!quick_replies || quick_replies.length === 0) {
+        throw new Error("quick_replies array is required");
+      }
+      // Normalize quick replies: max 13, title <= 20 chars, ensure payload
+      const qrs = quick_replies
+        .slice(0, 13)
+        .map((qr, idx) => ({
+          content_type: "text",
+          title: (qr.title || "").toString().slice(0, 20),
+          payload: qr.payload || `QR_${Date.now()}_${idx}`,
+        }));
+
       const body = {
-        recipient,
+        recipient: sendRecipient,
         message: {
-          text: message,
-          quick_replies: quick_replies.map(qr => ({
-            content_type: "text",
-            title: qr.title,
-            payload: qr.payload,
-          })),
+          text: message || "",
+          quick_replies: qrs,
         },
       };
-      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
-      if (status >= 400) throw new Error("Quick replies failed");
-      return data;
+
+      return await doPost(body);
     }
 
     case "button": {
-      if (!buttons || buttons.length === 0) throw new Error("buttons array is required");
-      const cleanButtons = buttons.slice(0, 3).map(b => ({
-        type: "web_url",
-        url: b.url,
-        title: (b.text || b.title || "Open").toString().slice(0, 20),
-      }));
+      if (!buttons || buttons.length === 0) {
+        throw new Error("buttons array is required");
+      }
+      // keep up to 3, ensure title <= 20 and require https for web_url where possible
+      const payloadButtons = buttons
+        .slice(0, 3)
+        .map((b) => ({
+          type: "web_url",
+          url: (b.url || b.link || "").toString(),
+          title: (b.text || b.title || "Open").toString().slice(0, 20),
+        }));
+
       const body = {
-        recipient,
+        recipient: sendRecipient,
         message: {
           attachment: {
             type: "template",
             payload: {
               template_type: "button",
               text: message || "",
-              buttons: cleanButtons,
+              buttons: payloadButtons,
             },
           },
         },
       };
-      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
-      if (status >= 400) throw new Error("Button template failed");
-      return data;
+
+      return await doPost(body);
     }
 
     case "generic": {
-      if (!cards || cards.length === 0) throw new Error("cards array is required");
+      if (!cards || cards.length === 0) {
+        throw new Error("cards array is required");
+      }
+
+      const elements = cards.slice(0, 10).map((card) => ({
+        title: card.title,
+        subtitle: card.subtitle || undefined,
+        image_url: card.image_url || undefined,
+        buttons: card.button
+          ? [
+              {
+                type: "web_url",
+                url: card.button.url,
+                title: (card.button.text || "Open").toString().slice(0, 20),
+              },
+            ]
+          : undefined,
+      }));
+
       const body = {
-        recipient,
+        recipient: sendRecipient,
         message: {
           attachment: {
             type: "template",
             payload: {
               template_type: "generic",
-              elements: cards.map(card => ({
-                title: card.title,
-                subtitle: card.subtitle || undefined,
-                image_url: card.image_url || undefined,
-                buttons: card.button ? [{
-                  type: "web_url",
-                  url: card.button.url,
-                  title: card.button.text || "Open",
-                }] : undefined,
-              })),
+              elements,
             },
           },
         },
       };
-      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
-      if (status >= 400) throw new Error("Generic template failed");
-      return data;
+
+      return await doPost(body);
     }
 
     case "media": {
-      if (!media_url) throw new Error("media_url required");
+      if (!media_url) {
+        throw new Error("media_url required");
+      }
       const body = {
-        recipient,
+        recipient: sendRecipient,
         message: {
           attachment: {
             type: "image",
@@ -527,15 +577,14 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken }) {
           },
         },
       };
-      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
-      if (status >= 400) throw new Error("Media message failed");
-      return data;
+      return await doPost(body);
     }
 
     default:
       throw new Error(`Unknown flow node type: ${type}`);
   }
 }
+
 
 async function handlePostback(event) {
   const senderId = event.sender?.id;
@@ -593,11 +642,13 @@ async function handlePostback(event) {
   const accessToken = creds.fbPageAccessToken;
 
   try {
-    await sendFlowMessage({
-    recipient: { comment_id: String(c.commentId) },   // <- important change
-    flowNode: auto.dm.flowConfig.initial,
-    pageAccessToken: accessToken,
-  });
+    // send nextNode to the *user* (id) — quick replies and followups must be sent to user id
+ await sendFlowMessage({
+  recipient: { comment_id: String(c.commentId), id: String(c.fromUserId) },
+  flowNode: auto.dm.flowConfig.initial,
+  pageAccessToken: accessToken,
+});
+
 
     conversation.addHistory({
       flowId: nextFlowId,
@@ -610,10 +661,11 @@ async function handlePostback(event) {
     conversation.currentFlowId = nextFlowId;
     await conversation.save();
   } catch (err) {
-    console.error("Failed to send next message:", err.message);
+    console.error("Failed to send next message:", err.message, err.details || err.stack);
     conversation.markError(err);
     await conversation.save();
   }
+
 }
 
 
@@ -765,11 +817,12 @@ app.post("/pubsub", async (req, res) => {
               if (dmType === "conversation_flow") {
                 console.log("🌊 Starting conversation flow");
 
-               await sendFlowMessage({
-    recipient: { comment_id: String(c.commentId) },   // <- important change
-    flowNode: auto.dm.flowConfig.initial,
-    pageAccessToken: accessToken,
-  });
+          await sendFlowMessage({
+  recipient: { comment_id: String(c.commentId), id: String(c.fromUserId) },
+  flowNode: auto.dm.flowConfig.initial,
+  pageAccessToken: accessToken,
+});
+
 
                 await ConversationState.create({
                   userId: auto.userId,
