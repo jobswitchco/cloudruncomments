@@ -31,15 +31,18 @@ const MONGO_URI = "mongodb+srv://jobswitchco:1q2unIeMxwn9IpUB@clusterjob.5grzhlw
 const COMMENT_TOPIC = "ig-webhook-events";
 const MESSAGING_TOPIC = "ig-messaging-events";
 
-// Middleware for webhook endpoint (preserve raw body for HMAC)
+// ========== MIDDLEWARE ==========
+// For webhook endpoint (root path), preserve raw body for HMAC verification
 app.use((req, res, next) => {
-  if (req.path === '/' || req.path === '/webhook') {
+  if (req.path === '/' && req.method === 'POST') {
+    // Capture raw body for HMAC verification
     express.json({
       verify: (req, res, buf) => {
         req.rawBody = buf;
       }
     })(req, res, next);
   } else {
+    // Regular JSON parsing for other endpoints
     express.json({ type: "*/*" })(req, res, next);
   }
 });
@@ -545,31 +548,54 @@ async function handleTextMessage(event) {
 
 // ========== WEBHOOK ENDPOINT (ROOT) ==========
 app.get("/", (req, res) => {
-  console.log("GET verify request");
+  console.log("GET verify request", {
+    mode: req.query["hub.mode"],
+    token: req.query["hub.verify_token"],
+    challenge: req.query["hub.challenge"]
+  });
   
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
   
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified");
+    console.log("✅ Webhook verified - returning challenge");
     return res.status(200).send(challenge);
   }
   
-  console.warn("❌ Verification failed");
+  console.warn("❌ Verification failed", {
+    expectedToken: VERIFY_TOKEN,
+    receivedToken: token,
+    mode: mode
+  });
   return res.sendStatus(403);
 });
 
 app.post("/", async (req, res) => {
-  console.log("📥 Webhook POST from Meta");
+  console.log("📥 Webhook POST from Meta", {
+    hasRawBody: !!req.rawBody,
+    rawBodyLength: req.rawBody?.length,
+    hasSignature: !!req.get("X-Hub-Signature-256")
+  });
 
   const signature = req.get("X-Hub-Signature-256");
   const raw = req.rawBody;
 
+  if (!raw) {
+    console.error("❌ No raw body available for HMAC verification");
+    return res.sendStatus(400);
+  }
+
   if (!verifyMetaSignature(raw, signature, APP_SECRET)) {
-    console.warn("❌ HMAC failed");
+    console.warn("❌ HMAC verification failed", {
+      hasSig: Boolean(signature),
+      sigPrefixOk: signature?.startsWith("sha256="),
+      rawLen: raw?.length || 0
+    });
     return res.sendStatus(401);
   }
+
+  console.log("✅ HMAC verified");
 
   const parsedBody = req.body;
   const eventType = getEventType(parsedBody);
@@ -581,7 +607,7 @@ app.post("/", async (req, res) => {
   } else if (eventType === "messaging") {
     topic = MESSAGING_TOPIC;
   } else {
-    console.warn("⚠️ Unknown event type");
+    console.warn("⚠️ Unknown event type, acknowledging anyway");
     return res.sendStatus(200);
   }
 
@@ -601,7 +627,7 @@ app.post("/", async (req, res) => {
     await pubsub.topic(topic).publishMessage({ json: msg });
     console.log(`✅ Published to ${topic}`);
   } catch (e) {
-    console.error(`❌ Pub/Sub error:`, e);
+    console.error(`❌ Pub/Sub error:`, e.message);
   }
 
   return res.sendStatus(200);
@@ -615,13 +641,14 @@ app.post("/pubsub", async (req, res) => {
     if (PUBSUB_TOKEN) {
       const headerToken = req.get("X-Pubsub-Token");
       if (headerToken !== PUBSUB_TOKEN) {
-        console.warn("⚠️ Unauthorized");
+        console.warn("⚠️ Unauthorized Pub/Sub push");
         return res.status(401).send("unauthorized");
       }
     }
 
     const msg = req.body?.message;
     if (!msg?.data) {
+      console.log("ℹ️ Empty Pub/Sub message");
       return res.status(204).send();
     }
 
@@ -638,6 +665,7 @@ app.post("/pubsub", async (req, res) => {
     const commentEvents = await extractCommentEvents(envelope);
     
     if (!commentEvents.length) {
+      console.log("ℹ️ No comment events");
       return res.status(204).send();
     }
 
@@ -652,13 +680,19 @@ app.post("/pubsub", async (req, res) => {
         postId: c.mediaId,
       }).lean();
 
-      if (!autos.length) continue;
+      if (!autos.length) {
+        console.log("ℹ️ No automation for media:", c.mediaId);
+        continue;
+      }
 
       for (const auto of autos) {
         const normalizedKeywords = auto.keywords.map(normalize).filter(Boolean);
         const matched = normalizedKeywords.some((kw) => c.text.includes(kw));
         
-        if (!matched) continue;
+        if (!matched) {
+          console.log("ℹ️ No keyword match");
+          continue;
+        }
 
         console.log("✅ Keyword matched");
 
@@ -673,7 +707,7 @@ app.post("/pubsub", async (req, res) => {
         const fbPageId = creds.fbPageId;
 
         if (!accessToken || !fbPageId) {
-          console.warn("⚠️ Missing tokens");
+          console.warn("⚠️ Missing tokens for user:", key);
           continue;
         }
 
@@ -834,7 +868,7 @@ app.post("/pubsub", async (req, res) => {
 
     return res.status(204).send();
   } catch (err) {
-    console.error("❌ /pubsub error", err.message);
+    console.error("❌ /pubsub error", err.message, err.stack);
     return res.status(500).send("error");
   }
 });
@@ -847,13 +881,14 @@ app.post("/pubsub-messaging", async (req, res) => {
     if (PUBSUB_TOKEN) {
       const headerToken = req.get("X-Pubsub-Token");
       if (headerToken !== PUBSUB_TOKEN) {
-        console.warn("⚠️ Unauthorized");
+        console.warn("⚠️ Unauthorized Pub/Sub push");
         return res.status(401).send("unauthorized");
       }
     }
 
     const msg = req.body?.message;
     if (!msg?.data) {
+      console.log("ℹ️ Empty Pub/Sub message");
       return res.status(204).send();
     }
 
@@ -872,6 +907,7 @@ app.post("/pubsub-messaging", async (req, res) => {
     const entries = envelope?.body?.entry || [];
     
     if (!entries.length) {
+      console.log("ℹ️ No entries");
       return res.status(204).send();
     }
     
@@ -903,7 +939,7 @@ app.post("/pubsub-messaging", async (req, res) => {
 
     return res.status(204).send();
   } catch (err) {
-    console.error("❌ /pubsub-messaging error", err.message);
+    console.error("❌ /pubsub-messaging error", err.message, err.stack);
     return res.status(500).send("error");
   }
 });
@@ -911,6 +947,7 @@ app.post("/pubsub-messaging", async (req, res) => {
 // Health check
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
+// Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Server listening on ${PORT}`);
+  console.log(`🚀 Server listening on port ${PORT} at ${new Date().toISOString()}`);
 });
