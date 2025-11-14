@@ -1,6 +1,9 @@
+// index.js for cloudruncomments service
 import express from "express";
 import mongoose from "mongoose";
 import axios from "axios";
+import crypto from "crypto";
+import { PubSub } from "@google-cloud/pubsub";
 import qs from "qs";
 
 import Automation from "./models/Automation.js";
@@ -9,20 +12,37 @@ import User from "./models/User.js";
 import ActionLock from "./models/ActionLock.js";
 import ConversationState from "./models/ConversationState.js";
 
-const username = "jobswitchco";
-const password = "1q2unIeMxwn9IpUB";
-const MONGO_URI =
-  "mongodb+srv://" +
-  username +
-  ":" +
-  password +
-  "@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob";
-
-const PORT = 8080;
-const PUBSUB_TOKEN = process.env.PUBSUB_TOKEN || "";
-
 const app = express();
-app.use(express.json({ type: "*/*" }));
+const pubsub = new PubSub();
+
+// Config
+const PORT = process.env.PORT || 8080;
+const PUBSUB_TOKEN = process.env.PUBSUB_TOKEN || "";
+const VERIFY_TOKEN = 'CmReI394849!@349Ig987Insta0QupS';
+const APP_SECRET = '2b21c578035bd7b96b24ba43e4479a52';
+const META_APP_ID = "1360956302356492";
+const META_APP_SECRET = "2b21c578035bd7b96b24ba43e4479a52";
+const FB_API = "https://graph.facebook.com/v24.0";
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const MONGO_URI = "mongodb+srv://jobswitchco:1q2unIeMxwn9IpUB@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob";
+
+// Pub/Sub topics
+const COMMENT_TOPIC = "ig-webhook-events";
+const MESSAGING_TOPIC = "ig-messaging-events";
+
+// Middleware for webhook endpoint (preserve raw body for HMAC)
+app.use((req, res, next) => {
+  if (req.path === '/' || req.path === '/webhook') {
+    express.json({
+      verify: (req, res, buf) => {
+        req.rawBody = buf;
+      }
+    })(req, res, next);
+  } else {
+    express.json({ type: "*/*" })(req, res, next);
+  }
+});
 
 // ---------- Axios setup ----------
 const http = axios.create({
@@ -41,7 +61,7 @@ http.interceptors.response.use(
   }
 );
 
-// ---------- Mongo ----------
+// ---------- MongoDB ----------
 async function connectMongo() {
   if (mongoose.connection.readyState === 0) {
     await mongoose.connect(MONGO_URI, {
@@ -57,6 +77,31 @@ function normalize(str = "") {
   return String(str).toLowerCase().trim();
 }
 
+function verifyMetaSignature(rawBody, signatureHeader, appSecret) {
+  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
+  const sig = signatureHeader.slice("sha256=".length);
+  const expected = crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
+  } catch {
+    return false;
+  }
+}
+
+function getEventType(parsedBody) {
+  const entries = parsedBody?.entry || [];
+  
+  for (const entry of entries) {
+    if (entry.changes && entry.changes.length > 0) {
+      return "comment";
+    }
+    if (entry.messaging && entry.messaging.length > 0) {
+      return "messaging";
+    }
+  }
+  return "unknown";
+}
+
 async function extractCommentEvents(envelope) {
   const events = [];
   const entries = envelope?.body?.entry || [];
@@ -67,31 +112,20 @@ async function extractCommentEvents(envelope) {
 
     for (const ch of changes) {
       const v = ch?.value || {};
-      const commentId = v.id;
-      const mediaId = v.media?.id;
-      const text = v.text || "";
-      const fromUserId = v.from?.id;
-      const fromUsername = v.from?.username;
-
       events.push({
-        eventId: envelope?.headers?.["X-Hub-Delivery"] || commentId || Math.random().toString(36),
+        eventId: envelope?.headers?.["X-Hub-Delivery"] || v.id || Math.random().toString(36),
         pageId: entry?.id,
-        mediaId,
-        commentId,
-        text: text.toLowerCase(),
-        fromUserId,
-        fromUsername,
+        mediaId: v.media?.id,
+        commentId: v.id,
+        text: (v.text || "").toLowerCase(),
+        fromUserId: v.from?.id,
+        fromUsername: v.from?.username,
         timestamp: v.timestamp || entryTime || Date.now(),
       });
     }
   }
   return events;
 }
-
-const META_APP_ID = "1360956302356492";
-const META_APP_SECRET = "2b21c578035bd7b96b24ba43e4479a52";
-const FB_API = "https://graph.facebook.com/v24.0";
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 function daysLeft(expiry) {
   if (!expiry) return -Infinity;
@@ -102,8 +136,8 @@ async function refreshFbTokensForUser(user) {
   const llResp = await axios.get(`${FB_API}/oauth/access_token`, {
     params: {
       grant_type: "fb_exchange_token",
-      client_id: process.env.META_APP_ID || META_APP_ID,
-      client_secret: process.env.META_APP_SECRET || META_APP_SECRET,
+      client_id: META_APP_ID,
+      client_secret: META_APP_SECRET,
       fb_exchange_token: user.fbLongLivedToken,
     },
   });
@@ -150,7 +184,7 @@ async function ensureFreshPageTokenForUser(userId) {
     try {
       return await refreshFbTokensForUser(user);
     } catch (e) {
-      console.error("⚠️ FB refresh failed:", e?.response?.data || e.message || e);
+      console.error("⚠️ FB refresh failed:", e?.response?.data || e.message);
       return {
         fbPageAccessToken: user.fbPageAccessToken || null,
         fbPageId: user.fbPageId || null,
@@ -165,22 +199,15 @@ async function ensureFreshPageTokenForUser(userId) {
 }
 
 // ---------- Message Sending Functions ----------
-
 async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
-  try {
-    console.log("Replying to comment:", commentId);
-    const url = `https://graph.facebook.com/v24.0/${commentId}/replies`;
-    const res = await axios.post(
-      url,
-      { message: replyText },
-      { headers: { Authorization: `Bearer ${pageAccessToken}` } }
-    );
-    console.log("✅ Replied to comment", commentId, res.data);
-    return res.data;
-  } catch (err) {
-    console.error("❌ IG reply failed", commentId, err.response?.data || err.message);
-    throw err;
-  }
+  const url = `${FB_API}/${commentId}/replies`;
+  const res = await axios.post(
+    url,
+    { message: replyText },
+    { headers: { Authorization: `Bearer ${pageAccessToken}` } }
+  );
+  console.log("✅ Replied to comment", commentId);
+  return res.data;
 }
 
 async function sendTextMessage({ fbPageId, commentId, message, pageAccessToken }) {
@@ -225,8 +252,6 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
     },
   };
 
-  console.log("-> sendButtonTemplate payload:", JSON.stringify(msgBody, null, 2));
-
   const { data, status } = await http.post(url, msgBody, {
     params: { access_token: pageAccessToken },
   });
@@ -255,8 +280,6 @@ async function sendQuickReplies({ fbPageId, commentId, message, quickReplies, pa
       })),
     },
   };
-
-  console.log("-> sendQuickReplies payload:", JSON.stringify(msgBody, null, 2));
 
   const { data, status } = await http.post(url, msgBody, {
     params: { access_token: pageAccessToken },
@@ -287,21 +310,17 @@ async function sendGenericTemplate({ fbPageId, commentId, cards, pageAccessToken
             subtitle: card.subtitle || undefined,
             image_url: card.image_url || undefined,
             buttons: card.button
-              ? [
-                  {
-                    type: "web_url",
-                    url: card.button.url,
-                    title: card.button.text || "Open",
-                  },
-                ]
+              ? [{
+                  type: "web_url",
+                  url: card.button.url,
+                  title: card.button.text || "Open",
+                }]
               : undefined,
           })),
         },
       },
     },
   };
-
-  console.log("-> sendGenericTemplate payload:", JSON.stringify(msgBody, null, 2));
 
   const { data, status } = await http.post(url, msgBody, {
     params: { access_token: pageAccessToken },
@@ -320,7 +339,7 @@ async function sendGenericTemplate({ fbPageId, commentId, cards, pageAccessToken
 async function sendFlowMessage({ fbPageId, commentId, flowNode, pageAccessToken }) {
   const { type, message, quick_replies, buttons, cards, media_url } = flowNode;
 
-  console.log("🔄 sendFlowMessage called", { type, commentId, hasQuickReplies: !!quick_replies, hasButtons: !!buttons });
+  console.log("🔄 sendFlowMessage", { type, commentId });
 
   switch (type) {
     case "text":
@@ -328,38 +347,21 @@ async function sendFlowMessage({ fbPageId, commentId, flowNode, pageAccessToken 
 
     case "quick_replies":
       if (!quick_replies || quick_replies.length === 0) {
-        throw new Error("quick_replies array is required for type quick_replies");
+        throw new Error("quick_replies array is required");
       }
-      return await sendQuickReplies({
-        fbPageId,
-        commentId,
-        message,
-        quickReplies: quick_replies,
-        pageAccessToken,
-      });
+      return await sendQuickReplies({ fbPageId, commentId, message, quickReplies: quick_replies, pageAccessToken });
 
     case "button":
       if (!buttons || buttons.length === 0) {
-        throw new Error("buttons array is required for type button");
+        throw new Error("buttons array is required");
       }
-      return await sendButtonTemplate({
-        fbPageId,
-        commentId,
-        message,
-        buttons,
-        pageAccessToken,
-      });
+      return await sendButtonTemplate({ fbPageId, commentId, message, buttons, pageAccessToken });
 
     case "generic":
       if (!cards || cards.length === 0) {
-        throw new Error("cards array is required for type generic");
+        throw new Error("cards array is required");
       }
-      return await sendGenericTemplate({
-        fbPageId,
-        commentId,
-        cards,
-        pageAccessToken,
-      });
+      return await sendGenericTemplate({ fbPageId, commentId, cards, pageAccessToken });
 
     case "media":
       const url = `${FB_API}/${fbPageId}/messages`;
@@ -387,20 +389,9 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
   const hasButton = button && typeof button.url === "string" && button.url.trim();
 
   if (hasButton) {
-    return await sendButtonTemplate({
-      fbPageId,
-      commentId,
-      message,
-      buttons: [button],
-      pageAccessToken,
-    });
+    return await sendButtonTemplate({ fbPageId, commentId, message, buttons: [button], pageAccessToken });
   } else {
-    return await sendTextMessage({
-      fbPageId,
-      commentId,
-      message,
-      pageAccessToken,
-    });
+    return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
   }
 }
 
@@ -434,22 +425,19 @@ async function finalizeAction({ automationId, commentId, channel, ok, error }) {
   await ActionLock.updateOne({ automationId, commentId, channel }, { $set: update });
 }
 
-// ---------- Message Handler Functions ----------
-
+// ---------- Message Handlers ----------
 async function handlePostback(event) {
-  console.log("🔍 DEBUG Full postback event:", JSON.stringify(event, null, 2));
+  console.log("🔘 Postback received:", { senderId: event.sender?.id, payload: event.postback?.payload });
+
   const senderId = event.sender?.id;
   const payload = event.postback?.payload;
   const title = event.postback?.title;
 
-  console.log("🔘 Postback received", { senderId, payload, title });
-
   if (!senderId || !payload) {
-    console.warn("⚠️ Missing senderId or payload in postback");
+    console.warn("⚠️ Missing senderId or payload");
     return;
   }
 
-  // Find active conversation
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
@@ -457,20 +445,18 @@ async function handlePostback(event) {
   }).sort({ startedAt: -1 });
 
   if (!conversation) {
-    console.log("ℹ️ No active conversation found for user", senderId);
+    console.log("ℹ️ No active conversation for user", senderId);
     return;
   }
 
-  console.log("✅ Found active conversation:", conversation._id.toString());
+  console.log("✅ Found conversation:", conversation._id.toString());
 
   const currentFlowId = conversation.currentFlowId;
   const flowConfig = conversation.flowConfig;
   
-  // Get current node
-  const currentNode =
-    currentFlowId === "initial"
-      ? flowConfig.initial
-      : flowConfig.flows?.[currentFlowId];
+  const currentNode = currentFlowId === "initial"
+    ? flowConfig.initial
+    : flowConfig.flows?.[currentFlowId] || flowConfig.flows?.get?.(currentFlowId);
 
   if (!currentNode) {
     console.error("❌ Current flow node not found:", currentFlowId);
@@ -479,9 +465,6 @@ async function handlePostback(event) {
     return;
   }
 
-  console.log("🔍 Current node:", { currentFlowId, type: currentNode.type, hasNextActions: !!currentNode.next_actions });
-  
-  // Handle next_actions as Map or plain object
   let nextFlowId;
   if (currentNode.next_actions instanceof Map) {
     nextFlowId = currentNode.next_actions.get(payload);
@@ -489,60 +472,38 @@ async function handlePostback(event) {
     nextFlowId = currentNode.next_actions?.[payload];
   }
 
-  console.log("🔍 Next flow lookup:", { payload, nextFlowId, availableActions: Object.keys(currentNode.next_actions || {}) });
+  console.log("🔍 Next flow:", { payload, nextFlowId });
 
   if (!nextFlowId) {
-    console.log("🏁 End of conversation - no next flow for payload:", payload);
+    console.log("🏁 End of conversation");
     conversation.markCompleted();
     await conversation.save();
-
     await Automation.updateOne(
       { _id: conversation.automationId },
       { $inc: { "runStats.flowConversationsCompleted": 1 } }
     );
-
     return;
   }
 
-  // Get next node
-  let nextNode;
-  if (flowConfig.flows instanceof Map) {
-    nextNode = flowConfig.flows.get(nextFlowId);
-  } else {
-    nextNode = flowConfig.flows?.[nextFlowId];
-  }
+  const nextNode = flowConfig.flows?.[nextFlowId] || flowConfig.flows?.get?.(nextFlowId);
 
   if (!nextNode) {
-    console.error("❌ Next flow node not found:", nextFlowId);
+    console.error("❌ Next node not found:", nextFlowId);
     conversation.markError(new Error(`Next flow ${nextFlowId} not found`));
     await conversation.save();
     return;
   }
 
-  console.log("✅ Found next node:", { nextFlowId, type: nextNode.type });
-
-  // Get credentials with error handling
-  let creds;
-  try {
-    creds = await ensureFreshPageTokenForUser(conversation.userId);
-  } catch (err) {
-    console.error("❌ Failed to get tokens:", err.message);
-    conversation.markError(err);
-    await conversation.save();
-    return;
-  }
-
-  const accessToken = creds.fbPageAccessToken;
-  const fbPageId = creds.fbPageId;
+  const creds = await ensureFreshPageTokenForUser(conversation.userId);
+  const { fbPageAccessToken: accessToken, fbPageId } = creds;
 
   if (!accessToken || !fbPageId) {
-    console.error("⚠️ Missing tokens", { fbPageId, hasToken: !!accessToken });
-    conversation.markError(new Error("Missing access tokens"));
+    console.error("⚠️ Missing tokens");
+    conversation.markError(new Error("Missing tokens"));
     await conversation.save();
     return;
   }
 
-  // Send next message
   try {
     await sendFlowMessage({
       fbPageId,
@@ -551,9 +512,8 @@ async function handlePostback(event) {
       pageAccessToken: accessToken,
     });
 
-    console.log("✅ Sent next flow message:", nextFlowId);
+    console.log("✅ Sent next flow:", nextFlowId);
 
-    // Update conversation history
     conversation.addHistory({
       flowId: nextFlowId,
       flowName: nextFlowId,
@@ -564,179 +524,113 @@ async function handlePostback(event) {
 
     conversation.currentFlowId = nextFlowId;
     await conversation.save();
-
-    console.log("✅ Conversation state updated");
   } catch (err) {
-    console.error("❌ Failed to send next message:", err.message, err.details || err.stack);
+    console.error("❌ Failed to send next message:", err.message);
     conversation.markError(err);
     await conversation.save();
   }
 }
 
 async function handleQuickReply(event) {
-  console.log("🔍 DEBUG Full quick_reply event:", JSON.stringify(event, null, 2));
-  const senderId = event.sender?.id;
-  const payload = event.message?.quick_reply?.payload;
-  const text = event.message?.text;
-
-  console.log("➡️ Quick reply received", { senderId, payload, text });
-
-  if (!senderId || !payload) {
-    console.warn("⚠️ Missing senderId or payload in quick_reply");
-    return;
-  }
-
-  // Find active conversation
-  const conversation = await ConversationState.findOne({
-    igUserId: senderId,
-    status: "active",
-    expiresAt: { $gt: new Date() },
-  }).sort({ startedAt: -1 });
-
-  if (!conversation) {
-    console.log("ℹ️ No active conversation found for user", senderId);
-    return;
-  }
-
-  console.log("✅ Found active conversation:", conversation._id.toString());
-
-  const currentFlowId = conversation.currentFlowId;
-  const flowConfig = conversation.flowConfig;
-
-  const currentNode =
-    currentFlowId === "initial"
-      ? flowConfig.initial
-      : flowConfig.flows?.[currentFlowId];
-
-  if (!currentNode) {
-    console.error("❌ Current flow node not found:", currentFlowId);
-    conversation.markError(new Error(`Flow node ${currentFlowId} not found`));
-    await conversation.save();
-    return;
-  }
-
-  // Handle next_actions as Map or plain object
-  let nextFlowId;
-  if (currentNode.next_actions instanceof Map) {
-    nextFlowId = currentNode.next_actions.get(payload);
-  } else {
-    nextFlowId = currentNode.next_actions?.[payload];
-  }
-
-  if (!nextFlowId) {
-    console.log("🏁 End of conversation - no next flow for quick_reply payload:", payload);
-    conversation.markCompleted();
-    await conversation.save();
-
-    await Automation.updateOne(
-      { _id: conversation.automationId },
-      { $inc: { "runStats.flowConversationsCompleted": 1 } }
-    );
-    return;
-  }
-
-  // Get next node
-  let nextNode;
-  if (flowConfig.flows instanceof Map) {
-    nextNode = flowConfig.flows.get(nextFlowId);
-  } else {
-    nextNode = flowConfig.flows?.[nextFlowId];
-  }
-
-  if (!nextNode) {
-    console.error("❌ Next flow node not found:", nextFlowId);
-    conversation.markError(new Error(`Next flow ${nextFlowId} not found`));
-    await conversation.save();
-    return;
-  }
-
-  // Get credentials
-  let creds;
-  try {
-    creds = await ensureFreshPageTokenForUser(conversation.userId);
-  } catch (err) {
-    console.error("❌ Failed to get tokens:", err.message);
-    conversation.markError(err);
-    await conversation.save();
-    return;
-  }
-
-  const accessToken = creds.fbPageAccessToken;
-  const fbPageId = creds.fbPageId;
-
-  if (!accessToken || !fbPageId) {
-    console.error("⚠️ Missing tokens for user", conversation.userId);
-    conversation.markError(new Error("Missing access tokens"));
-    await conversation.save();
-    return;
-  }
-
-  try {
-    // Send next message
-    await sendFlowMessage({
-      fbPageId,
-      commentId: conversation.commentId,
-      flowNode: nextNode,
-      pageAccessToken: accessToken,
-    });
-
-    console.log("✅ Sent next flow message for quick_reply:", nextFlowId);
-
-    conversation.addHistory({
-      flowId: nextFlowId,
-      flowName: nextFlowId,
-      messageSent: nextNode.message,
-      userReply: text,
-      userPayload: payload,
-    });
-
-    conversation.currentFlowId = nextFlowId;
-    await conversation.save();
-
-    console.log("✅ Conversation state updated (quick_reply)");
-  } catch (err) {
-    console.error("❌ Failed to send next message (quick_reply):", err.message, err.details || err.stack);
-    conversation.markError(err);
-    await conversation.save();
-  }
+  console.log("➡️ Quick reply received");
+  // Quick replies come as postbacks in Instagram, so this is a fallback
+  await handlePostback(event);
 }
 
 async function handleTextMessage(event) {
   const senderId = event.sender?.id;
   const text = event.message?.text;
-
-  console.log("💬 Text message received", { senderId, text });
-  
-  // You can implement conversation handling for freeform text here
-  // For now, just logging
+  console.log("💬 Text message:", { senderId, text });
 }
 
-// ========== PUB/SUB ENDPOINT 1: COMMENTS ==========
+// ========== WEBHOOK ENDPOINT (ROOT) ==========
+app.get("/", (req, res) => {
+  console.log("GET verify request");
+  
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("✅ Webhook verified");
+    return res.status(200).send(challenge);
+  }
+  
+  console.warn("❌ Verification failed");
+  return res.sendStatus(403);
+});
+
+app.post("/", async (req, res) => {
+  console.log("📥 Webhook POST from Meta");
+
+  const signature = req.get("X-Hub-Signature-256");
+  const raw = req.rawBody;
+
+  if (!verifyMetaSignature(raw, signature, APP_SECRET)) {
+    console.warn("❌ HMAC failed");
+    return res.sendStatus(401);
+  }
+
+  const parsedBody = req.body;
+  const eventType = getEventType(parsedBody);
+  console.log("🎯 Event type:", eventType);
+
+  let topic;
+  if (eventType === "comment") {
+    topic = COMMENT_TOPIC;
+  } else if (eventType === "messaging") {
+    topic = MESSAGING_TOPIC;
+  } else {
+    console.warn("⚠️ Unknown event type");
+    return res.sendStatus(200);
+  }
+
+  const msg = {
+    receivedAt: new Date().toISOString(),
+    eventType,
+    headers: {
+      "X-Hub-Delivery": req.get("X-Hub-Delivery") || null,
+      "X-Hub-Signature-256": signature || null,
+    },
+    body: parsedBody,
+  };
+
+  console.log(`📤 Publishing to ${topic}`);
+
+  try {
+    await pubsub.topic(topic).publishMessage({ json: msg });
+    console.log(`✅ Published to ${topic}`);
+  } catch (e) {
+    console.error(`❌ Pub/Sub error:`, e);
+  }
+
+  return res.sendStatus(200);
+});
+
+// ========== PUB/SUB ENDPOINT: COMMENTS ==========
 app.post("/pubsub", async (req, res) => {
   try {
-    // Pub/Sub token verification (optional)
+    console.log("📨 /pubsub called (comments)");
+
     if (PUBSUB_TOKEN) {
       const headerToken = req.get("X-Pubsub-Token");
       if (headerToken !== PUBSUB_TOKEN) {
-        console.warn("⚠️ Unauthorized Pub/Sub push");
+        console.warn("⚠️ Unauthorized");
         return res.status(401).send("unauthorized");
       }
     }
 
     const msg = req.body?.message;
     if (!msg?.data) {
-      console.log("ℹ️ Empty Pub/Sub message (comments)");
       return res.status(204).send();
     }
 
-    // Decode Pub/Sub message
     let envelope;
     try {
       const json = Buffer.from(msg.data, "base64").toString("utf8");
       envelope = JSON.parse(json);
-      console.log("📨 Decoded comment event from Pub/Sub");
     } catch (e) {
-      console.error("❌ Pub/Sub decode failed", e);
+      console.error("❌ Decode failed", e);
       return res.status(204).send();
     }
 
@@ -744,11 +638,10 @@ app.post("/pubsub", async (req, res) => {
     const commentEvents = await extractCommentEvents(envelope);
     
     if (!commentEvents.length) {
-      console.log("ℹ️ No comment events to process");
       return res.status(204).send();
     }
 
-    console.log(`📬 Processing ${commentEvents.length} comment events`);
+    console.log(`📬 Processing ${commentEvents.length} comments`);
 
     const userTokenCache = new Map();
 
@@ -759,21 +652,15 @@ app.post("/pubsub", async (req, res) => {
         postId: c.mediaId,
       }).lean();
 
-      if (!autos.length) {
-        console.log("ℹ️ No automation for media", c.mediaId);
-        continue;
-      }
+      if (!autos.length) continue;
 
       for (const auto of autos) {
         const normalizedKeywords = auto.keywords.map(normalize).filter(Boolean);
         const matched = normalizedKeywords.some((kw) => c.text.includes(kw));
         
-        if (!matched) {
-          console.log("ℹ️ Comment doesn't match keywords", { text: c.text, keywords: normalizedKeywords });
-          continue;
-        }
+        if (!matched) continue;
 
-        console.log("✅ Keyword matched!", { text: c.text, automationId: auto._id });
+        console.log("✅ Keyword matched");
 
         const key = String(auto.userId);
         let creds = userTokenCache.get(key);
@@ -786,7 +673,7 @@ app.post("/pubsub", async (req, res) => {
         const fbPageId = creds.fbPageId;
 
         if (!accessToken || !fbPageId) {
-          console.warn("⚠️ Missing fbPageAccessToken/fbPageId for user", key);
+          console.warn("⚠️ Missing tokens");
           continue;
         }
 
@@ -818,15 +705,14 @@ app.post("/pubsub", async (req, res) => {
                 text: c.text,
                 status: "sent",
               });
-              console.log("✅ Public reply sent", { commentId: c.commentId });
             } catch (err) {
-              console.error("❌ Public reply failed", err.details || err.message);
+              console.error("❌ Public reply failed", err.message);
               await finalizeAction({
                 automationId: auto._id,
                 commentId: c.commentId,
                 channel: "public",
                 ok: false,
-                error: err.details || { message: err.message },
+                error: { message: err.message },
               });
             }
           }
@@ -842,13 +728,12 @@ app.post("/pubsub", async (req, res) => {
 
           if (proceed) {
             try {
-              let data;
               const dmType = auto.dm.type || "simple";
 
               if (dmType === "conversation_flow") {
-                console.log("🌊 Starting conversation flow for comment", c.commentId);
+                console.log("🌊 Starting conversation flow");
 
-                data = await sendFlowMessage({
+                await sendFlowMessage({
                   fbPageId,
                   commentId: c.commentId,
                   flowNode: auto.dm.flowConfig.initial,
@@ -863,25 +748,21 @@ app.post("/pubsub", async (req, res) => {
                   igUsername: c.fromUsername,
                   currentFlowId: "initial",
                   flowConfig: auto.dm.flowConfig,
-                  conversationHistory: [
-                    {
-                      flowId: "initial",
-                      flowName: "INITIAL",
-                      messageSent: auto.dm.flowConfig.initial.message,
-                      timestamp: new Date(),
-                    },
-                  ],
+                  conversationHistory: [{
+                    flowId: "initial",
+                    flowName: "INITIAL",
+                    messageSent: auto.dm.flowConfig.initial.message,
+                    timestamp: new Date(),
+                  }],
                   expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
                 });
-
-                console.log("✅ Conversation flow started", c.commentId);
 
                 await Automation.updateOne(
                   { _id: auto._id },
                   { $inc: { "runStats.flowConversationsStarted": 1 } }
                 );
               } else {
-                data = await sendPrivateReply({
+                await sendPrivateReply({
                   fbPageId,
                   commentId: c.commentId,
                   message: auto.dm.message,
@@ -890,7 +771,6 @@ app.post("/pubsub", async (req, res) => {
                 });
               }
 
-              // Fetch user details
               const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
               const { data: userDetails } = await axios.get(userDetailsUrl, {
                 params: {
@@ -921,15 +801,15 @@ app.post("/pubsub", async (req, res) => {
                 businessFollowsUser: userDetails.is_business_follow_user,
               });
 
-              console.log("✅ Private reply + user details saved");
+              console.log("✅ Private reply sent");
             } catch (err) {
-              console.error("❌ Private reply failed", err.details || err.message || err.stack);
+              console.error("❌ Private reply failed", err.message);
               await finalizeAction({
                 automationId: auto._id,
                 commentId: c.commentId,
                 channel: "private",
                 ok: false,
-                error: err.details || { message: err.message },
+                error: { message: err.message },
               });
             }
           }
@@ -954,39 +834,36 @@ app.post("/pubsub", async (req, res) => {
 
     return res.status(204).send();
   } catch (err) {
-    console.error("❌ Unhandled /pubsub error", err.message, err.stack);
+    console.error("❌ /pubsub error", err.message);
     return res.status(500).send("error");
   }
 });
 
-// ========== PUB/SUB ENDPOINT 2: MESSAGING ==========
+// ========== PUB/SUB ENDPOINT: MESSAGING ==========
 app.post("/pubsub-messaging", async (req, res) => {
   try {
     console.log("📨 /pubsub-messaging called");
 
-    // Pub/Sub token verification (optional)
     if (PUBSUB_TOKEN) {
       const headerToken = req.get("X-Pubsub-Token");
       if (headerToken !== PUBSUB_TOKEN) {
-        console.warn("⚠️ Unauthorized Pub/Sub push (messaging)");
+        console.warn("⚠️ Unauthorized");
         return res.status(401).send("unauthorized");
       }
     }
 
     const msg = req.body?.message;
     if (!msg?.data) {
-      console.log("ℹ️ Empty Pub/Sub message (messaging)");
       return res.status(204).send();
     }
 
-    // Decode Pub/Sub message (NO HMAC verification - already done in Cloud Function)
     let envelope;
     try {
       const json = Buffer.from(msg.data, "base64").toString("utf8");
       envelope = JSON.parse(json);
-      console.log("📨 Decoded Pub/Sub message:", JSON.stringify(envelope, null, 2));
+      console.log("📨 Decoded messaging event");
     } catch (e) {
-      console.error("❌ Pub/Sub decode failed (messaging)", e);
+      console.error("❌ Decode failed", e);
       return res.status(204).send();
     }
 
@@ -995,7 +872,6 @@ app.post("/pubsub-messaging", async (req, res) => {
     const entries = envelope?.body?.entry || [];
     
     if (!entries.length) {
-      console.log("ℹ️ No entries in messaging event");
       return res.status(204).send();
     }
     
@@ -1005,48 +881,36 @@ app.post("/pubsub-messaging", async (req, res) => {
       console.log(`📬 Processing ${messaging.length} messaging events`);
       
       for (const event of messaging) {
-        console.log("🔍 Event type check:", {
-          hasPostback: !!event.postback,
-          hasQuickReply: !!event.message?.quick_reply,
-          hasMessage: !!event.message,
-          hasReaction: !!event.reaction
-        });
-
-        // Handle postback (includes quick reply clicks)
         if (event.postback) {
           await handlePostback(event);
           continue;
         }
 
-        // Handle quick reply (legacy text-based format)
-        if (event.message && event.message.quick_reply) {
+        if (event.message?.quick_reply) {
           await handleQuickReply(event);
           continue;
         }
 
-        // Handle regular text message
-        if (event.message && !event.message.quick_reply) {
+        if (event.message) {
           await handleTextMessage(event);
         }
 
-        // Handle reaction
         if (event.reaction) {
-          console.log("👍 Reaction received:", event.reaction);
+          console.log("👍 Reaction:", event.reaction);
         }
       }
     }
 
     return res.status(204).send();
   } catch (err) {
-    console.error("❌ Unhandled /pubsub-messaging error", err.message, err.stack);
+    console.error("❌ /pubsub-messaging error", err.message);
     return res.status(500).send("error");
   }
 });
 
-// ---------- Health Check ----------
-app.get("/", (_req, res) => res.status(200).send("ok"));
+// Health check
+app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-// ---------- Start Server ----------
 app.listen(PORT, () => {
-  console.log(`🚀 Worker listening on ${PORT} at ${new Date().toISOString()}`);
+  console.log(`🚀 Server listening on ${PORT}`);
 });
