@@ -381,14 +381,32 @@ async function finalizeAction({ automationId, commentId, channel, ok, error }) {
 
 // ---------- Message Handlers ----------
 async function handlePostback(event) {
-  console.log("🔘 Postback received:", { senderId: event.sender?.id, payload: event.postback?.payload });
-
+  console.log("🔘 Full postback event:", JSON.stringify(event, null, 2));
+  
   const senderId = event.sender?.id;
-  const payload = event.postback?.payload;
-  const title = event.postback?.title;
+  
+  // Instagram quick replies can come in two formats:
+  // 1. event.postback.payload (button clicks)
+  // 2. event.message.quick_reply.payload (quick reply clicks)
+  let payload;
+  let title;
+  
+  if (event.postback) {
+    payload = event.postback.payload;
+    title = event.postback.title;
+  } else if (event.message?.quick_reply) {
+    payload = event.message.quick_reply.payload;
+    title = event.message.text;
+  }
+
+  console.log("🔍 Extracted:", { senderId, payload, title });
 
   if (!senderId || !payload) {
-    console.warn("⚠️ Missing senderId or payload");
+    console.warn("⚠️ Missing senderId or payload", { 
+      hasSenderId: !!senderId, 
+      hasPayload: !!payload,
+      eventKeys: Object.keys(event)
+    });
     return;
   }
 
@@ -426,10 +444,14 @@ async function handlePostback(event) {
     nextFlowId = currentNode.next_actions?.[payload];
   }
 
-  console.log("🔍 Next flow:", { payload, nextFlowId });
+  console.log("🔍 Next flow lookup:", { 
+    payload, 
+    nextFlowId, 
+    availableActions: Object.keys(currentNode.next_actions || {})
+  });
 
   if (!nextFlowId) {
-    console.log("🏁 End of conversation");
+    console.log("🏁 End of conversation - no next flow for payload:", payload);
     conversation.markCompleted();
     await conversation.save();
     await Automation.updateOne(
@@ -479,11 +501,12 @@ async function handlePostback(event) {
     conversation.currentFlowId = nextFlowId;
     await conversation.save();
   } catch (err) {
-    console.error("❌ Failed to send next message:", err.message);
+    console.error("❌ Failed to send next message:", err.message, err.stack);
     conversation.markError(err);
     await conversation.save();
   }
 }
+
 
 async function handleQuickReply(event) {
   console.log("➡️ Quick reply received");
@@ -780,25 +803,39 @@ app.post("/pubsub-messaging", async (req, res) => {
       
       console.log(`📬 Processing ${messaging.length} messaging events`);
       
-      for (const event of messaging) {
-        if (event.postback) {
-          await handlePostback(event);
-          continue;
-        }
+     for (const event of messaging) {
+  console.log("🔍 Event structure:", {
+    hasPostback: !!event.postback,
+    hasQuickReply: !!event.message?.quick_reply,
+    hasMessage: !!event.message,
+    hasReaction: !!event.reaction,
+    eventKeys: Object.keys(event)
+  });
 
-        if (event.message?.quick_reply) {
-          await handleQuickReply(event);
-          continue;
-        }
+  // Handle postbacks (button clicks)
+  if (event.postback) {
+    await handlePostback(event);
+    continue;
+  }
 
-        if (event.message) {
-          await handleTextMessage(event);
-        }
+  // Handle quick reply responses (they come as messages with quick_reply field)
+  if (event.message?.quick_reply) {
+    console.log("➡️ Quick reply detected, routing to handlePostback");
+    await handlePostback(event); // Route to same handler
+    continue;
+  }
 
-        if (event.reaction) {
-          console.log("👍 Reaction:", event.reaction);
-        }
-      }
+  // Handle regular text messages
+  if (event.message && !event.message.quick_reply) {
+    await handleTextMessage(event);
+  }
+
+  // Handle reactions
+  if (event.reaction) {
+    console.log("👍 Reaction:", event.reaction);
+  }
+}
+
     }
 
     return res.status(204).send();
