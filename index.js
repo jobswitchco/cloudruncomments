@@ -308,35 +308,32 @@ async function sendFlowMessage({ fbPageId, commentId, flowNode, pageAccessToken 
 
 
 
-// improved sendButtonTemplate with strict validation, retry and much better logging
+// ---------- Robust sendButtonTemplate + sendPrivateReply ----------
+
 async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageAccessToken }) {
-  // Sanity
   if (!Array.isArray(buttons) || buttons.length === 0) {
     throw new Error("buttons array is required");
   }
 
-  // Normalize & validate buttons: allow up to 3, require https url or a payload (but IG web_url needs https)
+  // Normalize & validate: allow up to 3, require https for web_url
   const cleanButtons = buttons
     .filter(Boolean)
     .slice(0, 3)
     .map((btn) => {
       const url = typeof btn.url === "string" ? btn.url.trim() : "";
-      const title = String(btn.text || btn.title || "Open").trim().slice(0, 20); // title <= 20 chars
+      const title = String(btn.text || btn.title || "Open").trim().slice(0, 20);
       return { original: btn, url, title };
     })
-    .filter(b => b.url && b.url.startsWith("https://")); // require https for web_url (common requirement)
+    .filter((b) => b.url && b.url.startsWith("https://"));
 
   if (!cleanButtons.length) {
-    throw new Error("No valid buttons after normalization (must have https URLs)");
+    throw new Error("No valid buttons after normalization (require https URLs, max 3)");
   }
 
-  // Build payload expected by IG/Messenger template
   const payloadButtons = cleanButtons.map((b) => ({
     type: "web_url",
     url: b.url,
     title: b.title || "Open",
-    // messenger_extensions: false, // commented out; use if needed for webview in Messenger
-    // webview_height_ratio: "full",
   }));
 
   const url = `${FB_API}/${fbPageId}/messages`;
@@ -354,86 +351,88 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
     },
   };
 
-  // Try call with limited retries for transient errors
-  let lastErr = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const { data, status } = await http.post(url, msgBody, {
-        params: { access_token: pageAccessToken },
-      });
+  // Try API call (single attempt here — caller can retry) and inspect error closely
+  try {
+    const { data, status } = await http.post(url, msgBody, {
+      params: { access_token: pageAccessToken },
+    });
 
-      // If API returned >=400 it will be handled by our http client, but do an extra check
-      if (status >= 400) {
-        const err = new Error("Button template failed");
-        err.details = data?.error || data;
-        throw err;
-      }
-
-      console.log("✅ Button template sent", { commentId, attempt, response: data });
-      return data;
-    } catch (err) {
-      lastErr = err;
-      // Log full body if available — this is critical (inspect error structure)
-      console.error("⚠️ sendButtonTemplate attempt failed", { attempt, commentId, error: (err.details || err.response?.data || err.message) });
-      // small wait on retry (only second attempt)
-      if (attempt === 1) await new Promise((r) => setTimeout(r, 300));
+    if (status >= 400) {
+      const err = new Error("Button template failed");
+      err.details = data?.error || data;
+      throw err;
     }
-  }
 
-  // If we reached here both attempts failed — build a helpful error object
-  const errorToThrow = new Error("Button template failed after retries");
-  errorToThrow.details = lastErr?.details || lastErr?.response?.data || lastErr?.message || lastErr;
-  throw errorToThrow;
+    console.log("✅ Button template sent", { commentId, response: data });
+    return { ok: true, data };
+  } catch (err) {
+    // Normalize error details shape
+    const details = err.details || err.response?.data || (err.message ? { message: err.message } : err);
+    console.error("⚠️ sendButtonTemplate error:", JSON.stringify(details, null, 2));
+
+    // If this is the 'already has a reply' case, surface that info
+    const subcode = details?.error_subcode || details?.error?.error_subcode || details?.code;
+    if (subcode === 2534023 || (details?.message && /already has a reply/i.test(details.message))) {
+      const noteworthy = new Error("Comment already has a reply (2534023)");
+      noteworthy.details = details;
+      noteworthy.code = 2534023;
+      throw noteworthy;
+    }
+
+    // For any other error, throw so caller handles fallback/retry
+    const e = new Error("Button template failed");
+    e.details = details;
+    throw e;
+  }
 }
 
-// improved sendPrivateReply - uses sendButtonTemplate and falls back to a text message containing the URL
 async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken, button }) {
   const hasButton = button && typeof button.url === "string" && button.url.trim();
 
-  if (hasButton) {
-    // Do extra validation locally: title length, url scheme
-    if (!button.text || !String(button.text).trim()) {
-      console.warn("⚠️ Button missing title, will use fallback text instead of template");
-    } else if (!/^https:\/\//i.test(button.url)) {
-      console.warn("⚠️ Button URL is not HTTPS — template likely to be rejected by API");
-    }
+  if (!hasButton) {
+    // Simple path
+    return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
+  }
 
-    try {
-      return await sendButtonTemplate({
-        fbPageId,
-        commentId,
-        message,
-        buttons: [button],
-        pageAccessToken,
-      });
-    } catch (err) {
-      // Save detailed error to logs and fall back to text
-      console.error("⚠️ sendButtonTemplate failed, falling back to text message. API error:", JSON.stringify(err.details || err.response?.data || err.message || err, null, 2));
+  // If a button is requested, try template; if it errors with "already has a reply", fallback to plain text
+  try {
+    const resp = await sendButtonTemplate({ fbPageId, commentId, message, buttons: [button], pageAccessToken });
+    return resp;
+  } catch (err) {
+    // Known: comment already has a reply (2534023). We'll attempt a text fallback (message + explicit URL)
+    if (err.code === 2534023 || (err.details && err.details.error_subcode === 2534023)) {
+      console.warn("⚠️ Button template rejected because comment already has a reply. Attempting text fallback.", JSON.stringify(err.details || err.message || err, null, 2));
+      // Fallback message includes the link so user can still act
+      const fallbackMsg = message ? `${message}\n\nOpen here: ${button.url}` : `Open here: ${button.url}`;
 
-      // Public fallback: message + explicit URL (user still gets link even if template rejected)
-      const fallbackMsg = message
-        ? `${message}\n\nOpen here: ${button.url}`
-        : `Open here: ${button.url}`;
-
-      // Try a plain text message as fallback
       try {
-        return await sendTextMessage({ fbPageId, commentId, message: fallbackMsg, pageAccessToken });
+        const txt = await sendTextMessage({ fbPageId, commentId, message: fallbackMsg, pageAccessToken });
+        console.log("✅ Fallback text (after 2534023) succeeded", { commentId });
+        return { ok: true, data: txt, fallback: true, reason: "already_has_reply" };
       } catch (tErr) {
-        // If fallback fails, attach both errors and rethrow so caller can persist them
-        console.error("❌ Fallback text also failed:", JSON.stringify(tErr?.response?.data || tErr?.message || tErr, null, 2));
+        console.error("❌ Fallback text after 2534023 failed:", JSON.stringify(tErr?.response?.data || tErr?.message || tErr, null, 2));
         const re = new Error("Button template failed; fallback text also failed");
-        re.details = {
-          buttonError: err.details || err.response?.data || err.message,
-          fallbackError: tErr?.response?.data || tErr?.message,
-        };
+        re.details = { buttonError: err.details || err.message, fallbackError: tErr?.response?.data || tErr?.message };
         throw re;
       }
     }
-  } else {
-    // No button requested — just send text
-    return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
+
+    // For other errors, try a normal text fallback as well (to be defensive)
+    console.warn("⚠️ sendButtonTemplate failed (non-2534023). Will try text fallback as a best effort.", JSON.stringify(err.details || err.message || err, null, 2));
+    const fallbackMsg = message ? `${message}\n\nOpen here: ${button.url}` : `Open here: ${button.url}`;
+    try {
+      const txt = await sendTextMessage({ fbPageId, commentId, message: fallbackMsg, pageAccessToken });
+      console.log("✅ Fallback text (after other button error) succeeded", { commentId });
+      return { ok: true, data: txt, fallback: true, reason: "button_error" };
+    } catch (tErr) {
+      console.error("❌ Fallback text after button error failed:", JSON.stringify(tErr?.response?.data || tErr?.message || tErr, null, 2));
+      const re = new Error("Button template failed; fallback text also failed");
+      re.details = { buttonError: err.details || err.message, fallbackError: tErr?.response?.data || tErr?.message };
+      throw re;
+    }
   }
 }
+
 
 
 
