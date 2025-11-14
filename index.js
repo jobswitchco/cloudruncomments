@@ -1,9 +1,7 @@
-// index.js for cloudruncomments service
+// index.js for cloudruncomments service - PUBSUB PROCESSOR ONLY
 import express from "express";
 import mongoose from "mongoose";
 import axios from "axios";
-import crypto from "crypto";
-import { PubSub } from "@google-cloud/pubsub";
 import qs from "qs";
 
 import Automation from "./models/Automation.js";
@@ -13,39 +11,17 @@ import ActionLock from "./models/ActionLock.js";
 import ConversationState from "./models/ConversationState.js";
 
 const app = express();
-const pubsub = new PubSub();
+app.use(express.json({ type: "*/*" }));
 
 // Config
 const PORT = process.env.PORT || 8080;
 const PUBSUB_TOKEN = process.env.PUBSUB_TOKEN || "";
-const VERIFY_TOKEN = 'CmReI394849!@349Ig987Insta0QupS';
-const APP_SECRET = '2b21c578035bd7b96b24ba43e4479a52';
 const META_APP_ID = "1360956302356492";
 const META_APP_SECRET = "2b21c578035bd7b96b24ba43e4479a52";
 const FB_API = "https://graph.facebook.com/v24.0";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const MONGO_URI = "mongodb+srv://jobswitchco:1q2unIeMxwn9IpUB@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob";
-
-// Pub/Sub topics
-const COMMENT_TOPIC = "ig-webhook-events";
-const MESSAGING_TOPIC = "ig-messaging-events";
-
-// ========== MIDDLEWARE ==========
-// For webhook endpoint (root path), preserve raw body for HMAC verification
-app.use((req, res, next) => {
-  if (req.path === '/' && req.method === 'POST') {
-    // Capture raw body for HMAC verification
-    express.json({
-      verify: (req, res, buf) => {
-        req.rawBody = buf;
-      }
-    })(req, res, next);
-  } else {
-    // Regular JSON parsing for other endpoints
-    express.json({ type: "*/*" })(req, res, next);
-  }
-});
 
 // ---------- Axios setup ----------
 const http = axios.create({
@@ -78,31 +54,6 @@ async function connectMongo() {
 // ---------- Utils ----------
 function normalize(str = "") {
   return String(str).toLowerCase().trim();
-}
-
-function verifyMetaSignature(rawBody, signatureHeader, appSecret) {
-  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
-  const sig = signatureHeader.slice("sha256=".length);
-  const expected = crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
-  try {
-    return crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
-  } catch {
-    return false;
-  }
-}
-
-function getEventType(parsedBody) {
-  const entries = parsedBody?.entry || [];
-  
-  for (const entry of entries) {
-    if (entry.changes && entry.changes.length > 0) {
-      return "comment";
-    }
-    if (entry.messaging && entry.messaging.length > 0) {
-      return "messaging";
-    }
-  }
-  return "unknown";
 }
 
 async function extractCommentEvents(envelope) {
@@ -546,93 +497,6 @@ async function handleTextMessage(event) {
   console.log("💬 Text message:", { senderId, text });
 }
 
-// ========== WEBHOOK ENDPOINT (ROOT) ==========
-app.get("/", (req, res) => {
-  console.log("GET verify request", {
-    mode: req.query["hub.mode"],
-    token: req.query["hub.verify_token"],
-    challenge: req.query["hub.challenge"]
-  });
-  
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified - returning challenge");
-    return res.status(200).send(challenge);
-  }
-  
-  console.warn("❌ Verification failed", {
-    expectedToken: VERIFY_TOKEN,
-    receivedToken: token,
-    mode: mode
-  });
-  return res.sendStatus(403);
-});
-
-app.post("/", async (req, res) => {
-  console.log("📥 Webhook POST from Meta", {
-    hasRawBody: !!req.rawBody,
-    rawBodyLength: req.rawBody?.length,
-    hasSignature: !!req.get("X-Hub-Signature-256")
-  });
-
-  const signature = req.get("X-Hub-Signature-256");
-  const raw = req.rawBody;
-
-  if (!raw) {
-    console.error("❌ No raw body available for HMAC verification");
-    return res.sendStatus(400);
-  }
-
-  if (!verifyMetaSignature(raw, signature, APP_SECRET)) {
-    console.warn("❌ HMAC verification failed", {
-      hasSig: Boolean(signature),
-      sigPrefixOk: signature?.startsWith("sha256="),
-      rawLen: raw?.length || 0
-    });
-    return res.sendStatus(401);
-  }
-
-  console.log("✅ HMAC verified");
-
-  const parsedBody = req.body;
-  const eventType = getEventType(parsedBody);
-  console.log("🎯 Event type:", eventType);
-
-  let topic;
-  if (eventType === "comment") {
-    topic = COMMENT_TOPIC;
-  } else if (eventType === "messaging") {
-    topic = MESSAGING_TOPIC;
-  } else {
-    console.warn("⚠️ Unknown event type, acknowledging anyway");
-    return res.sendStatus(200);
-  }
-
-  const msg = {
-    receivedAt: new Date().toISOString(),
-    eventType,
-    headers: {
-      "X-Hub-Delivery": req.get("X-Hub-Delivery") || null,
-      "X-Hub-Signature-256": signature || null,
-    },
-    body: parsedBody,
-  };
-
-  console.log(`📤 Publishing to ${topic}`);
-
-  try {
-    await pubsub.topic(topic).publishMessage({ json: msg });
-    console.log(`✅ Published to ${topic}`);
-  } catch (e) {
-    console.error(`❌ Pub/Sub error:`, e.message);
-  }
-
-  return res.sendStatus(200);
-});
-
 // ========== PUB/SUB ENDPOINT: COMMENTS ==========
 app.post("/pubsub", async (req, res) => {
   try {
@@ -944,10 +808,11 @@ app.post("/pubsub-messaging", async (req, res) => {
   }
 });
 
-// Health check
+// Health check (simple GET endpoint)
+app.get("/", (_req, res) => res.status(200).send("ok"));
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Server listening on port ${PORT} at ${new Date().toISOString()}`);
+  console.log(`🚀 Pub/Sub processor listening on port ${PORT} at ${new Date().toISOString()}`);
 });
