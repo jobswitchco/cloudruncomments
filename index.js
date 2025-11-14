@@ -594,10 +594,10 @@ async function handlePostback(event) {
 
   try {
     await sendFlowMessage({
-      recipient: { id: senderId },    // <-- use user id here
-      flowNode: nextNode,
-      pageAccessToken: accessToken,
-    });
+    recipient: { comment_id: String(c.commentId) },   // <- important change
+    flowNode: auto.dm.flowConfig.initial,
+    pageAccessToken: accessToken,
+  });
 
     conversation.addHistory({
       flowId: nextFlowId,
@@ -765,12 +765,11 @@ app.post("/pubsub", async (req, res) => {
               if (dmType === "conversation_flow") {
                 console.log("🌊 Starting conversation flow");
 
-                await sendFlowMessage({
-                  fbPageId,
-                  commentId: c.commentId,
-                  flowNode: auto.dm.flowConfig.initial,
-                  pageAccessToken: accessToken,
-                });
+               await sendFlowMessage({
+    recipient: { comment_id: String(c.commentId) },   // <- important change
+    flowNode: auto.dm.flowConfig.initial,
+    pageAccessToken: accessToken,
+  });
 
                 await ConversationState.create({
                   userId: auto.userId,
