@@ -185,40 +185,7 @@ async function sendTextMessage({ fbPageId, commentId, message, pageAccessToken }
   return data;
 }
 
-async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageAccessToken }) {
-  const url = `${FB_API}/${fbPageId}/messages`;
-  
-  const msgBody = {
-    recipient: { comment_id: String(commentId) },
-    message: {
-      attachment: {
-        type: "template",
-        payload: {
-          template_type: "button",
-          text: message,
-          buttons: buttons.map((btn) => ({
-            type: "web_url",
-            url: btn.url,
-            title: btn.text || "Open",
-          })),
-        },
-      },
-    },
-  };
 
-  const { data, status } = await http.post(url, msgBody, {
-    params: { access_token: pageAccessToken },
-  });
-
-  if (status >= 400) {
-    const err = new Error("Button template failed");
-    err.details = data?.error || data;
-    throw err;
-  }
-
-  console.log("✅ Button template sent", commentId);
-  return data;
-}
 
 async function sendQuickReplies({ fbPageId, commentId, message, quickReplies, pageAccessToken }) {
   const url = `${FB_API}/${fbPageId}/messages`;
@@ -339,15 +306,90 @@ async function sendFlowMessage({ fbPageId, commentId, flowNode, pageAccessToken 
   }
 }
 
+async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageAccessToken }) {
+  // basic sanity checks
+  if (!Array.isArray(buttons) || buttons.length === 0) {
+    throw new Error("buttons array is required");
+  }
+
+  // normalize & validate buttons: limit 3, require url, short title
+  const cleanButtons = buttons
+    .filter(b => b && (b.url || b.payload)) // at least url
+    .slice(0, 3)
+    .map((btn) => {
+      const url = typeof btn.url === "string" ? btn.url.trim() : "";
+      const title = String(btn.text || btn.title || "Open").trim().slice(0, 20); // safeguard length
+      return {
+        type: "web_url",
+        url,
+        title: title || "Open",
+      };
+    });
+
+  if (!cleanButtons.length) {
+    throw new Error("No valid buttons after normalization");
+  }
+
+  const url = `${FB_API}/${fbPageId}/messages`;
+  const msgBody = {
+    recipient: { comment_id: String(commentId) },
+    message: {
+      attachment: {
+        type: "template",
+        payload: {
+          template_type: "button",
+          text: message || "",
+          buttons: cleanButtons,
+        },
+      },
+    },
+  };
+
+  // try the API call
+  const { data, status } = await http.post(url, msgBody, {
+    params: { access_token: pageAccessToken },
+  });
+
+  if (status >= 400) {
+    const err = new Error("Button template failed");
+    err.details = data?.error || data;
+    throw err;
+  }
+
+  console.log("✅ Button template sent", commentId);
+  return data;
+}
+
 async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken, button }) {
   const hasButton = button && typeof button.url === "string" && button.url.trim();
 
   if (hasButton) {
-    return await sendButtonTemplate({ fbPageId, commentId, message, buttons: [button], pageAccessToken });
+    try {
+      return await sendButtonTemplate({ fbPageId, commentId, message, buttons: [button], pageAccessToken });
+    } catch (err) {
+      // Log full API error for debugging (keeps existing interceptor logs as well)
+      console.error("⚠️ sendButtonTemplate failed, falling back to text. API error:", err.details || err.message);
+
+      // Fallback: send a plain text message containing the URL so the user still gets actionable content
+      const fallbackMsg = message
+        ? `${message}\n\nOpen here: ${button.url}`
+        : `Open here: ${button.url}`;
+
+      try {
+        return await sendTextMessage({ fbPageId, commentId, message: fallbackMsg, pageAccessToken });
+      } catch (tErr) {
+        // If fallback fails, rethrow original button error (with details) so caller knows the root issue
+        console.error("❌ Fallback text also failed:", tErr?.message || tErr);
+        const re = new Error("Button template failed; fallback text also failed");
+        re.details = { buttonError: err.details || err.message, fallbackError: tErr?.response?.data || tErr?.message };
+        throw re;
+      }
+    }
   } else {
     return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
   }
 }
+
 
 // ---------- Action Locking ----------
 async function reserveAction({ automationId, commentId, channel }) {
