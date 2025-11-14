@@ -257,54 +257,8 @@ async function sendGenericTemplate({ fbPageId, commentId, cards, pageAccessToken
   return data;
 }
 
-async function sendFlowMessage({ fbPageId, commentId, flowNode, pageAccessToken }) {
-  const { type, message, quick_replies, buttons, cards, media_url } = flowNode;
 
-  console.log("🔄 sendFlowMessage", { type, commentId });
 
-  switch (type) {
-    case "text":
-      return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
-
-    case "quick_replies":
-      if (!quick_replies || quick_replies.length === 0) {
-        throw new Error("quick_replies array is required");
-      }
-      return await sendQuickReplies({ fbPageId, commentId, message, quickReplies: quick_replies, pageAccessToken });
-
-    case "button":
-      if (!buttons || buttons.length === 0) {
-        throw new Error("buttons array is required");
-      }
-      return await sendButtonTemplate({ fbPageId, commentId, message, buttons, pageAccessToken });
-
-    case "generic":
-      if (!cards || cards.length === 0) {
-        throw new Error("cards array is required");
-      }
-      return await sendGenericTemplate({ fbPageId, commentId, cards, pageAccessToken });
-
-    case "media":
-      const url = `${FB_API}/${fbPageId}/messages`;
-      const msgBody = {
-        recipient: { comment_id: String(commentId) },
-        message: {
-          attachment: {
-            type: "image",
-            payload: { url: media_url },
-          },
-        },
-      };
-      const { data, status } = await http.post(url, msgBody, {
-        params: { access_token: pageAccessToken },
-      });
-      if (status >= 400) throw new Error("Media message failed");
-      return data;
-
-    default:
-      throw new Error(`Unknown flow node type: ${type}`);
-  }
-}
 
 
 
@@ -466,18 +420,127 @@ async function finalizeAction({ automationId, commentId, channel, ok, error }) {
   await ActionLock.updateOne({ automationId, commentId, channel }, { $set: update });
 }
 
-// ---------- Message Handlers ----------
+// --- sendFlowMessage: accept explicit recipient object ---
+async function sendFlowMessage({ recipient, flowNode, pageAccessToken }) {
+  // recipient: { comment_id: "..." } OR { id: "<ig-user-id>" }
+  const { type, message, quick_replies, buttons, cards, media_url } = flowNode;
+
+  if (!recipient || (!recipient.comment_id && !recipient.id)) {
+    throw new Error("recipient (comment_id or id) is required");
+  }
+
+  const url = `${FB_API}/${recipient.id || recipient.comment_id}/messages`;
+
+  // Helper to post with http client
+  const post = (body) =>
+    http.post(`${FB_API}/${recipient.id || recipient.comment_id}/messages`, body, {
+      params: { access_token: pageAccessToken },
+    });
+
+  switch (type) {
+    case "text": {
+      const body = { recipient, message: { text: message } };
+      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
+      if (status >= 400) throw new Error("Text message failed");
+      return data;
+    }
+
+    case "quick_replies": {
+      if (!quick_replies || quick_replies.length === 0) throw new Error("quick_replies array is required");
+      const body = {
+        recipient,
+        message: {
+          text: message,
+          quick_replies: quick_replies.map(qr => ({
+            content_type: "text",
+            title: qr.title,
+            payload: qr.payload,
+          })),
+        },
+      };
+      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
+      if (status >= 400) throw new Error("Quick replies failed");
+      return data;
+    }
+
+    case "button": {
+      if (!buttons || buttons.length === 0) throw new Error("buttons array is required");
+      const cleanButtons = buttons.slice(0, 3).map(b => ({
+        type: "web_url",
+        url: b.url,
+        title: (b.text || b.title || "Open").toString().slice(0, 20),
+      }));
+      const body = {
+        recipient,
+        message: {
+          attachment: {
+            type: "template",
+            payload: {
+              template_type: "button",
+              text: message || "",
+              buttons: cleanButtons,
+            },
+          },
+        },
+      };
+      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
+      if (status >= 400) throw new Error("Button template failed");
+      return data;
+    }
+
+    case "generic": {
+      if (!cards || cards.length === 0) throw new Error("cards array is required");
+      const body = {
+        recipient,
+        message: {
+          attachment: {
+            type: "template",
+            payload: {
+              template_type: "generic",
+              elements: cards.map(card => ({
+                title: card.title,
+                subtitle: card.subtitle || undefined,
+                image_url: card.image_url || undefined,
+                buttons: card.button ? [{
+                  type: "web_url",
+                  url: card.button.url,
+                  title: card.button.text || "Open",
+                }] : undefined,
+              })),
+            },
+          },
+        },
+      };
+      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
+      if (status >= 400) throw new Error("Generic template failed");
+      return data;
+    }
+
+    case "media": {
+      if (!media_url) throw new Error("media_url required");
+      const body = {
+        recipient,
+        message: {
+          attachment: {
+            type: "image",
+            payload: { url: media_url },
+          },
+        },
+      };
+      const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
+      if (status >= 400) throw new Error("Media message failed");
+      return data;
+    }
+
+    default:
+      throw new Error(`Unknown flow node type: ${type}`);
+  }
+}
+
 async function handlePostback(event) {
-  console.log("🔘 Full postback event:", JSON.stringify(event, null, 2));
-  
   const senderId = event.sender?.id;
-  
-  // Instagram quick replies can come in two formats:
-  // 1. event.postback.payload (button clicks)
-  // 2. event.message.quick_reply.payload (quick reply clicks)
-  let payload;
-  let title;
-  
+  let payload, title;
+
   if (event.postback) {
     payload = event.postback.payload;
     title = event.postback.title;
@@ -486,96 +549,55 @@ async function handlePostback(event) {
     title = event.message.text;
   }
 
-  console.log("🔍 Extracted:", { senderId, payload, title });
-
   if (!senderId || !payload) {
-    console.warn("⚠️ Missing senderId or payload", { 
-      hasSenderId: !!senderId, 
-      hasPayload: !!payload,
-      eventKeys: Object.keys(event)
-    });
+    console.warn("Missing senderId or payload");
     return;
   }
 
+  // find active conversation (as you already do)
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
 
-  if (!conversation) {
-    console.log("ℹ️ No active conversation for user", senderId);
-    return;
-  }
+  if (!conversation) return;
 
-  console.log("✅ Found conversation:", conversation._id.toString());
-
+  // determine next node (your existing logic)
   const currentFlowId = conversation.currentFlowId;
   const flowConfig = conversation.flowConfig;
-  
   const currentNode = currentFlowId === "initial"
     ? flowConfig.initial
     : flowConfig.flows?.[currentFlowId] || flowConfig.flows?.get?.(currentFlowId);
 
-  if (!currentNode) {
-    console.error("❌ Current flow node not found:", currentFlowId);
-    conversation.markError(new Error(`Flow node ${currentFlowId} not found`));
-    await conversation.save();
-    return;
-  }
+  if (!currentNode) { /* handle error */ return; }
 
-  let nextFlowId;
-  if (currentNode.next_actions instanceof Map) {
-    nextFlowId = currentNode.next_actions.get(payload);
-  } else {
-    nextFlowId = currentNode.next_actions?.[payload];
-  }
-
-  console.log("🔍 Next flow lookup:", { 
-    payload, 
-    nextFlowId, 
-    availableActions: Object.keys(currentNode.next_actions || {})
-  });
+  // lookup next flow by payload
+  const nextFlowId = (currentNode.next_actions instanceof Map)
+    ? currentNode.next_actions.get(payload)
+    : currentNode.next_actions?.[payload];
 
   if (!nextFlowId) {
-    console.log("🏁 End of conversation - no next flow for payload:", payload);
+    // end conversation / mark completed
     conversation.markCompleted();
     await conversation.save();
-    await Automation.updateOne(
-      { _id: conversation.automationId },
-      { $inc: { "runStats.flowConversationsCompleted": 1 } }
-    );
+    await Automation.updateOne({ _id: conversation.automationId }, { $inc: { "runStats.flowConversationsCompleted": 1 } });
     return;
   }
 
   const nextNode = flowConfig.flows?.[nextFlowId] || flowConfig.flows?.get?.(nextFlowId);
+  if (!nextNode) { /* error */ return; }
 
-  if (!nextNode) {
-    console.error("❌ Next node not found:", nextFlowId);
-    conversation.markError(new Error(`Next flow ${nextFlowId} not found`));
-    await conversation.save();
-    return;
-  }
-
+  // IMPORTANT: send to the user id, not comment_id
   const creds = await ensureFreshPageTokenForUser(conversation.userId);
-  const { fbPageAccessToken: accessToken, fbPageId } = creds;
-
-  if (!accessToken || !fbPageId) {
-    console.error("⚠️ Missing tokens");
-    conversation.markError(new Error("Missing tokens"));
-    await conversation.save();
-    return;
-  }
+  const accessToken = creds.fbPageAccessToken;
 
   try {
     await sendFlowMessage({
-      fbPageId,
-      commentId: conversation.commentId,
+      recipient: { id: senderId },    // <-- use user id here
       flowNode: nextNode,
       pageAccessToken: accessToken,
     });
-
-    console.log("✅ Sent next flow:", nextFlowId);
 
     conversation.addHistory({
       flowId: nextFlowId,
@@ -588,11 +610,13 @@ async function handlePostback(event) {
     conversation.currentFlowId = nextFlowId;
     await conversation.save();
   } catch (err) {
-    console.error("❌ Failed to send next message:", err.message, err.stack);
+    console.error("Failed to send next message:", err.message);
     conversation.markError(err);
     await conversation.save();
   }
 }
+
+
 
 
 async function handleQuickReply(event) {
