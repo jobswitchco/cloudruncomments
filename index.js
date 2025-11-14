@@ -185,8 +185,6 @@ async function sendTextMessage({ fbPageId, commentId, message, pageAccessToken }
   return data;
 }
 
-
-
 async function sendQuickReplies({ fbPageId, commentId, message, quickReplies, pageAccessToken }) {
   const url = `${FB_API}/${fbPageId}/messages`;
   
@@ -257,11 +255,6 @@ async function sendGenericTemplate({ fbPageId, commentId, cards, pageAccessToken
   return data;
 }
 
-
-
-
-
-
 // ---------- Robust sendButtonTemplate + sendPrivateReply ----------
 
 async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageAccessToken }) {
@@ -305,7 +298,6 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
     },
   };
 
-  // Try API call (single attempt here — caller can retry) and inspect error closely
   try {
     const { data, status } = await http.post(url, msgBody, {
       params: { access_token: pageAccessToken },
@@ -320,11 +312,9 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
     console.log("✅ Button template sent", { commentId, response: data });
     return { ok: true, data };
   } catch (err) {
-    // Normalize error details shape
     const details = err.details || err.response?.data || (err.message ? { message: err.message } : err);
     console.error("⚠️ sendButtonTemplate error:", JSON.stringify(details, null, 2));
 
-    // If this is the 'already has a reply' case, surface that info
     const subcode = details?.error_subcode || details?.error?.error_subcode || details?.code;
     if (subcode === 2534023 || (details?.message && /already has a reply/i.test(details.message))) {
       const noteworthy = new Error("Comment already has a reply (2534023)");
@@ -333,7 +323,6 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
       throw noteworthy;
     }
 
-    // For any other error, throw so caller handles fallback/retry
     const e = new Error("Button template failed");
     e.details = details;
     throw e;
@@ -344,19 +333,15 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
   const hasButton = button && typeof button.url === "string" && button.url.trim();
 
   if (!hasButton) {
-    // Simple path
     return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
   }
 
-  // If a button is requested, try template; if it errors with "already has a reply", fallback to plain text
   try {
     const resp = await sendButtonTemplate({ fbPageId, commentId, message, buttons: [button], pageAccessToken });
     return resp;
   } catch (err) {
-    // Known: comment already has a reply (2534023). We'll attempt a text fallback (message + explicit URL)
     if (err.code === 2534023 || (err.details && err.details.error_subcode === 2534023)) {
       console.warn("⚠️ Button template rejected because comment already has a reply. Attempting text fallback.", JSON.stringify(err.details || err.message || err, null, 2));
-      // Fallback message includes the link so user can still act
       const fallbackMsg = message ? `${message}\n\nOpen here: ${button.url}` : `Open here: ${button.url}`;
 
       try {
@@ -371,7 +356,6 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
       }
     }
 
-    // For other errors, try a normal text fallback as well (to be defensive)
     console.warn("⚠️ sendButtonTemplate failed (non-2534023). Will try text fallback as a best effort.", JSON.stringify(err.details || err.message || err, null, 2));
     const fallbackMsg = message ? `${message}\n\nOpen here: ${button.url}` : `Open here: ${button.url}`;
     try {
@@ -386,9 +370,6 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
     }
   }
 }
-
-
-
 
 // ---------- Action Locking ----------
 async function reserveAction({ automationId, commentId, channel }) {
@@ -420,35 +401,46 @@ async function finalizeAction({ automationId, commentId, channel, ok, error }) {
   await ActionLock.updateOne({ automationId, commentId, channel }, { $set: update });
 }
 
-// --- sendFlowMessage: accept explicit recipient object ---
-async function sendFlowMessage({ recipient, flowNode, pageAccessToken }) {
-  // recipient: { comment_id: "..." } OR { id: "<ig-user-id>" } OR both
+// ---------- FIXED: sendFlowMessage with proper recipient handling ----------
+async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId }) {
   const { type, message, quick_replies, buttons, cards, media_url } = flowNode || {};
 
   if (!recipient || (!recipient.comment_id && !recipient.id)) {
     throw new Error("recipient (comment_id or id) is required");
   }
 
-  // Decide which target to call:
-  // - quick_replies should prefer user id (recipient.id) if present
-  // - for most templates (button/generic/media) prefer comment_id when present (to tie to comment)
-  // - fallback to whichever is available
-  let targetKey;
-  if (type === "quick_replies") {
-    targetKey = recipient.id ? "id" : "comment_id";
-  } else {
-    targetKey = recipient.comment_id ? "comment_id" : "id";
+  if (!fbPageId) {
+    throw new Error("fbPageId is required for messaging endpoint");
   }
 
-  const target = recipient[targetKey];
-  const sendRecipient = targetKey === "id" ? { id: String(recipient.id) } : { comment_id: String(recipient.comment_id) };
-  const url = `${FB_API}/${target}/messages`;
+  // CRITICAL FIX: Determine correct recipient format based on message type
+  let sendRecipient;
+  
+  if (type === "quick_replies" || type === "button") {
+    // Interactive messages MUST use user id (Instagram-scoped ID)
+    if (!recipient.id) {
+      throw new Error(`${type} requires recipient.id (user IGID)`);
+    }
+    sendRecipient = { id: String(recipient.id) };
+    console.log(`→ Sending ${type} to user ID:`, recipient.id);
+  } else {
+    // Simple messages can use comment_id for initial private reply, then user id
+    if (recipient.comment_id) {
+      sendRecipient = { comment_id: String(recipient.comment_id) };
+      console.log(`→ Sending ${type} to comment ID:`, recipient.comment_id);
+    } else if (recipient.id) {
+      sendRecipient = { id: String(recipient.id) };
+      console.log(`→ Sending ${type} to user ID:`, recipient.id);
+    } else {
+      throw new Error("Either comment_id or id must be provided");
+    }
+  }
 
-  // small debug log for request shape
+  const url = `${FB_API}/${fbPageId}/messages`;
+
   console.log("→ sendFlowMessage", {
     type,
-    targetKey,
-    target,
+    recipient: sendRecipient,
     preview: {
       message: typeof message === "string" ? message.slice(0, 200) : message,
       quick_replies: (quick_replies || []).map((q) => q?.title).slice(0, 10),
@@ -457,7 +449,7 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken }) {
     },
   });
 
-  // helper to do POST and normalize errors
+  // Helper to do POST and normalize errors
   const doPost = async (body) => {
     const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
     if (status >= 400) {
@@ -502,7 +494,6 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken }) {
       if (!buttons || buttons.length === 0) {
         throw new Error("buttons array is required");
       }
-      // keep up to 3, ensure title <= 20 and require https for web_url where possible
       const payloadButtons = buttons
         .slice(0, 3)
         .map((b) => ({
@@ -585,7 +576,7 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken }) {
   }
 }
 
-
+// ---------- FIXED: handlePostback with proper user ID usage ----------
 async function handlePostback(event) {
   const senderId = event.sender?.id;
   let payload, title;
@@ -603,31 +594,37 @@ async function handlePostback(event) {
     return;
   }
 
-  // find active conversation (as you already do)
+  console.log("📲 Postback/QuickReply received:", { senderId, payload, title });
+
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
 
-  if (!conversation) return;
+  if (!conversation) {
+    console.log("ℹ️ No active conversation found for user:", senderId);
+    return;
+  }
 
-  // determine next node (your existing logic)
   const currentFlowId = conversation.currentFlowId;
   const flowConfig = conversation.flowConfig;
   const currentNode = currentFlowId === "initial"
     ? flowConfig.initial
     : flowConfig.flows?.[currentFlowId] || flowConfig.flows?.get?.(currentFlowId);
 
-  if (!currentNode) { /* handle error */ return; }
+  if (!currentNode) {
+    console.error("❌ Current node not found:", currentFlowId);
+    return;
+  }
 
-  // lookup next flow by payload
+  // Lookup next flow by payload
   const nextFlowId = (currentNode.next_actions instanceof Map)
     ? currentNode.next_actions.get(payload)
     : currentNode.next_actions?.[payload];
 
   if (!nextFlowId) {
-    // end conversation / mark completed
+    console.log("🏁 Conversation completed (no next flow)");
     conversation.markCompleted();
     await conversation.save();
     await Automation.updateOne({ _id: conversation.automationId }, { $inc: { "runStats.flowConversationsCompleted": 1 } });
@@ -635,20 +632,28 @@ async function handlePostback(event) {
   }
 
   const nextNode = flowConfig.flows?.[nextFlowId] || flowConfig.flows?.get?.(nextFlowId);
-  if (!nextNode) { /* error */ return; }
+  if (!nextNode) {
+    console.error("❌ Next node not found:", nextFlowId);
+    return;
+  }
 
-  // IMPORTANT: send to the user id, not comment_id
   const creds = await ensureFreshPageTokenForUser(conversation.userId);
   const accessToken = creds.fbPageAccessToken;
+  const fbPageId = creds.fbPageId;
+
+  if (!accessToken || !fbPageId) {
+    console.error("❌ Missing credentials for user:", conversation.userId);
+    return;
+  }
 
   try {
-    // send nextNode to the *user* (id) — quick replies and followups must be sent to user id
- await sendFlowMessage({
-  recipient: { comment_id: String(c.commentId), id: String(c.fromUserId) },
-  flowNode: auto.dm.flowConfig.initial,
-  pageAccessToken: accessToken,
-});
-
+    // CRITICAL FIX: Send to user ID (not comment_id) for all follow-up messages
+    await sendFlowMessage({
+      recipient: { id: String(conversation.igUserId) },
+      flowNode: nextNode,
+      pageAccessToken: accessToken,
+      fbPageId: fbPageId,
+    });
 
     conversation.addHistory({
       flowId: nextFlowId,
@@ -660,20 +665,17 @@ async function handlePostback(event) {
 
     conversation.currentFlowId = nextFlowId;
     await conversation.save();
+
+    console.log("✅ Flow message sent successfully");
   } catch (err) {
-    console.error("Failed to send next message:", err.message, err.details || err.stack);
+    console.error("❌ Failed to send next message:", err.message, err.details || err.stack);
     conversation.markError(err);
     await conversation.save();
   }
-
 }
-
-
-
 
 async function handleQuickReply(event) {
   console.log("➡️ Quick reply received");
-  // Quick replies come as postbacks in Instagram, so this is a fallback
   await handlePostback(event);
 }
 
@@ -802,7 +804,7 @@ app.post("/pubsub", async (req, res) => {
           }
         }
 
-        // PRIVATE REPLY
+        // PRIVATE REPLY - FIXED
         if (auto.dm?.enabled && c.fromUserId) {
           const { proceed } = await reserveAction({
             automationId: auto._id,
@@ -817,12 +819,13 @@ app.post("/pubsub", async (req, res) => {
               if (dmType === "conversation_flow") {
                 console.log("🌊 Starting conversation flow");
 
-          await sendFlowMessage({
-  recipient: { comment_id: String(c.commentId), id: String(c.fromUserId) },
-  flowNode: auto.dm.flowConfig.initial,
-  pageAccessToken: accessToken,
-});
-
+                // CRITICAL FIX: Use user ID for interactive messages (quick replies)
+                await sendFlowMessage({
+                  recipient: { id: String(c.fromUserId) },
+                  flowNode: auto.dm.flowConfig.initial,
+                  pageAccessToken: accessToken,
+                  fbPageId: fbPageId,
+                });
 
                 await ConversationState.create({
                   userId: auto.userId,
@@ -846,6 +849,7 @@ app.post("/pubsub", async (req, res) => {
                   { $inc: { "runStats.flowConversationsStarted": 1 } }
                 );
               } else {
+                // Simple DM (non-flow)
                 await sendPrivateReply({
                   fbPageId,
                   commentId: c.commentId,
@@ -855,6 +859,7 @@ app.post("/pubsub", async (req, res) => {
                 });
               }
 
+              // Fetch user details
               const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
               const { data: userDetails } = await axios.get(userDetailsUrl, {
                 params: {
@@ -887,13 +892,13 @@ app.post("/pubsub", async (req, res) => {
 
               console.log("✅ Private reply sent");
             } catch (err) {
-              console.error("❌ Private reply failed", err.message);
+              console.error("❌ Private reply failed", err.message, err.details || err);
               await finalizeAction({
                 automationId: auto._id,
                 commentId: c.commentId,
                 channel: "private",
                 ok: false,
-                error: { message: err.message },
+                error: { message: err.message, details: err.details },
               });
             }
           }
@@ -966,39 +971,38 @@ app.post("/pubsub-messaging", async (req, res) => {
       
       console.log(`📬 Processing ${messaging.length} messaging events`);
       
-     for (const event of messaging) {
-  console.log("🔍 Event structure:", {
-    hasPostback: !!event.postback,
-    hasQuickReply: !!event.message?.quick_reply,
-    hasMessage: !!event.message,
-    hasReaction: !!event.reaction,
-    eventKeys: Object.keys(event)
-  });
+      for (const event of messaging) {
+        console.log("🔍 Event structure:", {
+          hasPostback: !!event.postback,
+          hasQuickReply: !!event.message?.quick_reply,
+          hasMessage: !!event.message,
+          hasReaction: !!event.reaction,
+          eventKeys: Object.keys(event)
+        });
 
-  // Handle postbacks (button clicks)
-  if (event.postback) {
-    await handlePostback(event);
-    continue;
-  }
+        // Handle postbacks (button clicks)
+        if (event.postback) {
+          await handlePostback(event);
+          continue;
+        }
 
-  // Handle quick reply responses (they come as messages with quick_reply field)
-  if (event.message?.quick_reply) {
-    console.log("➡️ Quick reply detected, routing to handlePostback");
-    await handlePostback(event); // Route to same handler
-    continue;
-  }
+        // Handle quick reply responses
+        if (event.message?.quick_reply) {
+          console.log("➡️ Quick reply detected, routing to handlePostback");
+          await handlePostback(event);
+          continue;
+        }
 
-  // Handle regular text messages
-  if (event.message && !event.message.quick_reply) {
-    await handleTextMessage(event);
-  }
+        // Handle regular text messages
+        if (event.message && !event.message.quick_reply) {
+          await handleTextMessage(event);
+        }
 
-  // Handle reactions
-  if (event.reaction) {
-    console.log("👍 Reaction:", event.reaction);
-  }
-}
-
+        // Handle reactions
+        if (event.reaction) {
+          console.log("👍 Reaction:", event.reaction);
+        }
+      }
     }
 
     return res.status(204).send();
@@ -1008,7 +1012,7 @@ app.post("/pubsub-messaging", async (req, res) => {
   }
 });
 
-// Health check (simple GET endpoint)
+// Health check
 app.get("/", (_req, res) => res.status(200).send("ok"));
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
