@@ -693,26 +693,32 @@ app.post("/pubsub-messaging", async (req, res) => {
     for (const entry of entries) {
       const messaging = entry?.messaging || [];
       
-   for (const event of messaging) {
+for (const event of messaging) {
+  // Quick reply clicks come as POSTBACK events for quick_replies type
   if (event.postback) {
+    console.log("🔘 Postback (includes quick_reply clicks):", event.postback);
     await handlePostback(event);
     continue;
   }
 
-  if (event.message && event.message.quick_reply) {
-    // quick replies need their own handler
+  // Text-based quick reply responses (rare, legacy format)
+  if (event.message?.quick_reply) {
+    console.log("➡️ Quick reply message:", event.message.quick_reply);
     await handleQuickReply(event);
     continue;
   }
 
+  // Regular text messages
   if (event.message && !event.message.quick_reply) {
     await handleTextMessage(event);
   }
 
+  // Reactions
   if (event.reaction) {
     console.log("👍 Reaction received:", event.reaction);
   }
 }
+
 
     }
 
@@ -749,6 +755,7 @@ async function handlePostback(event) {
 
   console.log("✅ Found active conversation:", conversation._id);
 
+  
   const currentFlowId = conversation.currentFlowId;
   const flowConfig = conversation.flowConfig;
   
@@ -788,7 +795,17 @@ async function handlePostback(event) {
     return;
   }
 
-  const creds = await ensureFreshPageTokenForUser(conversation.userId);
+
+
+  // const creds = await ensureFreshPageTokenForUser(conversation.userId);
+
+   let creds;
+  try {
+    creds = await ensureFreshPageTokenForUser(conversation.userId);
+  } catch (err) {
+    console.error("❌ Failed to get tokens:", err.message);
+    return;
+  }
   const accessToken = creds.fbPageAccessToken;
   const fbPageId = creds.fbPageId;
 
