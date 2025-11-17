@@ -837,6 +837,8 @@ async function sendInitialDMWithQuickReplies({
       igUserId: igUserId,
       igUsername: igUsername,
       currentFlowId: String(firstNode?.id),
+     currentFlowId: String(automation.flowNodes[0]?.id),  // first flow node id as string
+
       flowConfig: automation.flowNodes,
       conversationHistory: [
         {
@@ -850,6 +852,8 @@ async function sendInitialDMWithQuickReplies({
       startedAt: new Date(),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
+
+     
 
     return { ok: true };
   } catch (err) {
