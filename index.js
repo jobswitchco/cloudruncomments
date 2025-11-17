@@ -751,11 +751,11 @@ async function sendInitialDMWithQuickReplies({
   commentId,
   automation,
   pageAccessToken,
-  igUserId,
+  igUserId,        // ✅ NEED THIS
   igUsername,
 }) {
   try {
-    // STEP 1: Send button message
+    // STEP 1: Send button message to comment_id (private reply)
     const buttonPayload = {
       type: "postback",
       title: automation.buttonText,
@@ -764,7 +764,7 @@ async function sendInitialDMWithQuickReplies({
 
     const url = `${FB_API}/${fbPageId}/messages`;
     const buttonBody = {
-      recipient: { comment_id: commentId },
+      recipient: { comment_id: String(commentId) },  // ✅ Button MUST use comment_id
       message: {
         attachment: {
           type: "template",
@@ -777,7 +777,7 @@ async function sendInitialDMWithQuickReplies({
       },
     };
 
-    const { data: btnData, status: btnStatus } = await axios.post(
+    const { data: btnData, status: btnStatus } = await http.post(
       url,
       buttonBody,
       { params: { access_token: pageAccessToken } }
@@ -787,58 +787,19 @@ async function sendInitialDMWithQuickReplies({
       throw new Error(`Button send failed: ${JSON.stringify(btnData)}`);
     }
 
-    console.log("✅ Button message sent");
+    console.log("✅ Button message sent to comment:", commentId);
 
     // STEP 2: Check first node type
     const firstNode = automation.flowNodes?.[0];
 
-    if (firstNode && firstNode.type === "quickReply") {
-      // Wait before sending quick replies
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-
-      // STEP 3: Send quick replies
-      const quickReplies = (firstNode.replyOptions || [])
-        .slice(0, 13)
-        .map((option) => ({
-          content_type: "text",
-          title: (option.text || "Option").toString().slice(0, 20),
-          payload: `QR_${firstNode.id}_${option.id}`,
-        }));
-
-      if (quickReplies.length > 0) {
-        const qrBody = {
-          recipient: { comment_id: commentId },
-          message: {
-            text: firstNode.config?.quickReplyQuestion || "Choose one:",
-            quick_replies: quickReplies,
-          },
-        };
-
-        const { data: qrData, status: qrStatus } = await axios.post(
-          url,
-          qrBody,
-          { params: { access_token: pageAccessToken } }
-        );
-
-        if (qrStatus >= 400) {
-          console.warn("⚠️ Quick replies send failed:", qrData);
-          // Don't throw - button was sent successfully
-        } else {
-          console.log("✅ Quick replies sent");
-        }
-      }
-    }
-
-    // STEP 4: Create ConversationState
+    // STEP 3: Create ConversationState FIRST (before quick replies)
     await ConversationState.create({
       userId: automation.userId,
       automationId: automation._id,
       commentId: commentId,
       igUserId: igUserId,
       igUsername: igUsername,
-      currentFlowId: String(firstNode?.id),
-     currentFlowId: String(automation.flowNodes[0]?.id),  // first flow node id as string
-
+       currentFlowId: String(automation.flowNodes[0]?.id),
       flowConfig: automation.flowNodes,
       conversationHistory: [
         {
@@ -853,7 +814,49 @@ async function sendInitialDMWithQuickReplies({
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
 
-     
+    console.log("✅ ConversationState created");
+
+    // STEP 4: Send quick replies if first node is quickReply
+    if (firstNode && firstNode.type === "quickReply") {
+      // Wait before sending quick replies
+      // This gives user time to see button first
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+
+      // Build quick reply options
+      const quickReplies = (firstNode.replyOptions || [])
+        .slice(0, 13)
+        .map((option) => ({
+          content_type: "text",
+          title: (option.text || "Option").toString().slice(0, 20),
+          payload: `QR_${firstNode.id}_${option.id}`,
+        }));
+
+      if (quickReplies.length > 0) {
+        // ✅ CRITICAL: Quick replies use USER ID, not comment_id
+        const qrBody = {
+          recipient: { id: String(igUserId) },  // ✅ MUST use igUserId, NOT commentId
+          message: {
+            text: firstNode.config?.quickReplyQuestion || "Choose one:",
+            quick_replies: quickReplies,
+          },
+        };
+
+        console.log("→ Sending QR to user ID:", igUserId);
+
+        const { data: qrData, status: qrStatus } = await http.post(
+          url,
+          qrBody,
+          { params: { access_token: pageAccessToken } }
+        );
+
+        if (qrStatus >= 400) {
+          console.warn("⚠️ Quick replies send failed:", qrData?.error || qrData);
+          // Don't throw - button was sent successfully
+        } else {
+          console.log("✅ Quick replies sent to user:", igUserId);
+        }
+      }
+    }
 
     return { ok: true };
   } catch (err) {
