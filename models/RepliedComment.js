@@ -3,27 +3,37 @@ const { Schema } = mongoose;
 
 const RepliedCommentSchema = new Schema(
   {
-    commentId: { type: String, required: true},
-    automationId: { type: Schema.Types.ObjectId, ref: "automations", required: true},
-    channel: { type: String, enum: ["public", "private"], required: true}, // NEW
-    status: { type: String, enum: ["sent", "failed"], default: "sent" },    // NEW
+    commentId: { type: String, required: true },
+    automationId: { type: Schema.Types.ObjectId, ref: "automations", required: true },
+    postId: { type: String, required: true }, // linked Instagram post ID
+
+    // Track which node in flow this comment reply is on
+    currentNodeId: { type: String },
+
     repliedAt: { type: Date, default: Date.now },
-    text: { type: String },
-    sentMessage: { type: String },
-    error: { type: Object },
-    type: { type: String }, // keep your existing if you use it elsewhere
-    igUserId: String, // IGSID
+    text: { type: String },            // comment's text content
+    sentMessage: { type: String },    // message sent as reply or DM
+    error: { type: String },           // error message if any during reply flow
+
+    type: { type: String },            // optional usage if needed
+
+    igUserId: String,
     username: String,
     profilePic: String,
     followsBusiness: Boolean,
     businessFollowsUser: Boolean,
+
+    status: {
+      type: String,
+      enum: ["pending", "replied", "completed", "failed"],
+      default: "pending",
+    },
   },
   { timestamps: true }
 );
 
-// One record per automation/comment/channel (not strictly required if ActionLock is used,
-// but great for clean dashboards + queries)
-RepliedCommentSchema.index({ automationId: 1, commentId: 1, channel: 1 });
+// Updated index - removed 'channel' as it's not in schema
+RepliedCommentSchema.index({ automationId: 1, commentId: 1 });
 
 const RepliedComment =
   mongoose.models.RepliedComment ||
