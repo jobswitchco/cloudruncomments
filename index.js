@@ -801,17 +801,39 @@ app.post("/pubsub", async (req, res) => {
 
     console.log("✅ Private DM with postback button sent for comment:", c.commentId);
 
-    await RepliedComment.create({
-      commentId: c.commentId,
-      postId: c.mediaId,
-      automationId: auto._id,
-      channel: "private",
-      text: c.text,
-      sentMessage: auto.dmMessage,
-      state: "sent",
-      igUserId: c.fromUserId,
-      username: c.fromUsername,
-    });
+
+    try {
+  // Fetch detailed user info from Instagram Graph API
+  const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
+  const { data: userDetails } = await axios.get(userDetailsUrl, {
+    params: {
+      access_token: accessToken,
+      fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
+    },
+  });
+
+  await RepliedComment.create({
+    commentId: c.commentId,
+    postId: c.mediaId,
+    automationId: auto._id,
+    channel: "private",
+    state: "sent",
+    text: c.text,
+    sentMessage: auto.dmMessage,
+    status: "completed",               // use your enum compliant status
+    igUserId: userDetails.id,
+    username: userDetails.username,
+    profilePic: userDetails.profile_pic,
+    followsBusiness: userDetails.is_user_follow_business,
+    businessFollowsUser: userDetails.is_business_follow_user,
+  });
+
+  // ... continue with finalizeAction etc.
+} catch (err) {
+  console.error("❌ Failed fetching user details or creating RepliedComment:", err);
+  // ...handle error or fallback here
+}
+
 
     await finalizeAction({
       automationId: auto._id,
