@@ -1,4 +1,3 @@
-// index.js for cloudruncomments service - PUBSUB PROCESSOR ONLY
 import express from "express";
 import mongoose from "mongoose";
 import axios from "axios";
@@ -13,7 +12,6 @@ import ConversationState from "./models/ConversationState.js";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
-// Config
 const PORT = process.env.PORT || 8080;
 const PUBSUB_TOKEN = process.env.PUBSUB_TOKEN || "";
 const META_APP_ID = "1360956302356492";
@@ -21,9 +19,9 @@ const META_APP_SECRET = "2b21c578035bd7b96b24ba43e4479a52";
 const FB_API = "https://graph.facebook.com/v24.0";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const MONGO_URI = "mongodb+srv://jobswitchco:1q2unIeMxwn9IpUB@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob";
+const MONGO_URI =
+  "mongodb+srv://jobswitchco:1q2unIeMxwn9IpUB@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob";
 
-// ---------- Axios setup ----------
 const http = axios.create({
   timeout: 15000,
   validateStatus: (s) => s >= 200 && s < 500,
@@ -40,7 +38,6 @@ http.interceptors.response.use(
   }
 );
 
-// ---------- MongoDB ----------
 async function connectMongo() {
   if (mongoose.connection.readyState === 0) {
     await mongoose.connect(MONGO_URI, {
@@ -51,7 +48,6 @@ async function connectMongo() {
   }
 }
 
-// ---------- Utils ----------
 function normalize(str = "") {
   return String(str).toLowerCase().trim();
 }
@@ -59,7 +55,7 @@ function normalize(str = "") {
 async function extractCommentEvents(envelope) {
   const events = [];
   const entries = envelope?.body?.entry || [];
-  
+
   for (const entry of entries) {
     const entryTime = entry?.time || null;
     const changes = entry?.changes || [];
@@ -152,14 +148,9 @@ async function ensureFreshPageTokenForUser(userId) {
   };
 }
 
-// ---------- Message Sending Functions ----------
 async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
   const url = `${FB_API}/${commentId}/replies`;
-  const res = await axios.post(
-    url,
-    { message: replyText },
-    { headers: { Authorization: `Bearer ${pageAccessToken}` } }
-  );
+  const res = await axios.post(url, { message: replyText }, { headers: { Authorization: `Bearer ${pageAccessToken}` } });
   console.log("✅ Replied to comment", commentId);
   return res.data;
 }
@@ -170,26 +161,18 @@ async function sendTextMessage({ fbPageId, commentId, message, pageAccessToken }
     recipient: { comment_id: String(commentId) },
     message: { text: message },
   };
-
-  const { data, status } = await http.post(url, msgBody, {
-    params: { access_token: pageAccessToken },
-  });
-
+  const { data, status } = await http.post(url, msgBody, { params: { access_token: pageAccessToken } });
   if (status >= 400) {
     const err = new Error("Text message failed");
     err.details = data?.error || data;
     throw err;
   }
-
   console.log("✅ Text message sent", commentId);
   return data;
 }
 
 async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageAccessToken }) {
-  if (!Array.isArray(buttons) || buttons.length === 0) {
-    throw new Error("buttons array is required");
-  }
-
+  if (!Array.isArray(buttons) || buttons.length === 0) throw new Error("buttons array is required");
   const cleanButtons = buttons
     .filter(Boolean)
     .slice(0, 3)
@@ -199,10 +182,7 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
       return { original: btn, url, title };
     })
     .filter((b) => b.url && b.url.startsWith("https://"));
-
-  if (!cleanButtons.length) {
-    throw new Error("No valid buttons after normalization (require https URLs, max 3)");
-  }
+  if (!cleanButtons.length) throw new Error("No valid buttons after normalization (require https URLs, max 3)");
 
   const payloadButtons = cleanButtons.map((b) => ({
     type: "web_url",
@@ -226,22 +206,17 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
   };
 
   try {
-    const { data, status } = await http.post(url, msgBody, {
-      params: { access_token: pageAccessToken },
-    });
-
+    const { data, status } = await http.post(url, msgBody, { params: { access_token: pageAccessToken } });
     if (status >= 400) {
       const err = new Error("Button template failed");
       err.details = data?.error || data;
       throw err;
     }
-
-    console.log("✅ Button template sent", { commentId, response: data });
+    console.log("✅ Button template sent", { commentId, data });
     return { ok: true, data };
   } catch (err) {
     const details = err.details || err.response?.data || (err.message ? { message: err.message } : err);
     console.error("⚠️ sendButtonTemplate error:", JSON.stringify(details, null, 2));
-
     const subcode = details?.error_subcode || details?.error?.error_subcode || details?.code;
     if (subcode === 2534023 || (details?.message && /already has a reply/i.test(details.message))) {
       const noteworthy = new Error("Comment already has a reply (2534023)");
@@ -249,7 +224,6 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
       noteworthy.code = 2534023;
       throw noteworthy;
     }
-
     const e = new Error("Button template failed");
     e.details = details;
     throw e;
@@ -258,10 +232,7 @@ async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageA
 
 async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken, button }) {
   const hasButton = button && typeof button.url === "string" && button.url.trim();
-
-  if (!hasButton) {
-    return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
-  }
+  if (!hasButton) return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
 
   try {
     const resp = await sendButtonTemplate({ fbPageId, commentId, message, buttons: [button], pageAccessToken });
@@ -270,7 +241,6 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
     if (err.code === 2534023 || (err.details && err.details.error_subcode === 2534023)) {
       console.warn("⚠️ Button template rejected (already has reply). Attempting text fallback.");
       const fallbackMsg = message ? `${message}\n\nOpen here: ${button.url}` : `Open here: ${button.url}`;
-
       try {
         const txt = await sendTextMessage({ fbPageId, commentId, message: fallbackMsg, pageAccessToken });
         console.log("✅ Fallback text succeeded");
@@ -282,7 +252,6 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
         throw re;
       }
     }
-
     console.warn("⚠️ sendButtonTemplate failed. Trying text fallback.");
     const fallbackMsg = message ? `${message}\n\nOpen here: ${button.url}` : `Open here: ${button.url}`;
     try {
@@ -298,7 +267,6 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
   }
 }
 
-// ---------- Action Locking ----------
 async function reserveAction({ automationId, commentId, channel }) {
   try {
     const doc = await ActionLock.findOneAndUpdate(
@@ -321,39 +289,24 @@ async function reserveAction({ automationId, commentId, channel }) {
 }
 
 async function finalizeAction({ automationId, commentId, channel, ok, error }) {
-  const update = ok
-    ? { state: "sent", sentAt: new Date(), error: undefined }
-    : { state: "failed", error };
-
+  const update = ok ? { state: "sent", sentAt: new Date(), error: undefined } : { state: "failed", error };
   await ActionLock.updateOne({ automationId, commentId, channel }, { $set: update });
 }
 
-// ---------- CRITICAL: sendFlowMessage - handles BOTH comment_id (private reply) and user id (DM) ----------
 async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId }) {
   const { type, message, quick_replies, buttons, cards, media_url } = flowNode || {};
-
-  if (!recipient || (!recipient.comment_id && !recipient.id)) {
+  if (!recipient || (!recipient.comment_id && !recipient.id))
     throw new Error("recipient (comment_id or id) is required");
-  }
+  if (!fbPageId) throw new Error("fbPageId is required for messaging endpoint");
 
-  if (!fbPageId) {
-    throw new Error("fbPageId is required for messaging endpoint");
-  }
-
-  // Determine recipient based on what's available and message type
   let sendRecipient;
   let useCommentId = false;
 
-  // Quick replies CANNOT be sent via comment_id (private reply)
-  // They require user id (DM with 24hr window)
   if (type === "quick_replies") {
-    if (!recipient.id) {
-      throw new Error("Quick replies require recipient.id (cannot be sent as private reply)");
-    }
+    if (!recipient.id) throw new Error("Quick replies require recipient.id (cannot be sent as private reply)");
     sendRecipient = { id: String(recipient.id) };
     console.log(`→ Sending quick_replies to user ID:`, recipient.id);
   } else {
-    // For text, button, generic, media: prefer comment_id if available (private reply)
     if (recipient.comment_id) {
       sendRecipient = { comment_id: String(recipient.comment_id) };
       useCommentId = true;
@@ -367,12 +320,7 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
   }
 
   const url = `${FB_API}/${fbPageId}/messages`;
-
-  console.log("→ sendFlowMessage", {
-    type,
-    recipient: sendRecipient,
-    useCommentId,
-  });
+  console.log("→ sendFlowMessage", { type, recipient: sendRecipient, useCommentId });
 
   const doPost = async (body) => {
     const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
@@ -385,15 +333,10 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
   };
 
   switch (type) {
-    case "text": {
-      const body = { recipient: sendRecipient, message: { text: message || "" } };
-      return await doPost(body);
-    }
-
-    case "quick_replies": {
-      if (!quick_replies || quick_replies.length === 0) {
-        throw new Error("quick_replies array is required");
-      }
+    case "text":
+      return await doPost({ recipient: sendRecipient, message: { text: message || "" } });
+    case "quick_replies":
+      if (!quick_replies || quick_replies.length === 0) throw new Error("quick_replies array is required");
       const qrs = quick_replies
         .slice(0, 13)
         .map((qr, idx) => ({
@@ -401,22 +344,9 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
           title: (qr.title || "").toString().slice(0, 20),
           payload: qr.payload || `QR_${Date.now()}_${idx}`,
         }));
-
-      const body = {
-        recipient: sendRecipient,
-        message: {
-          text: message || "",
-          quick_replies: qrs,
-        },
-      };
-
-      return await doPost(body);
-    }
-
-    case "button": {
-      if (!buttons || buttons.length === 0) {
-        throw new Error("buttons array is required");
-      }
+      return await doPost({ recipient: sendRecipient, message: { text: message || "", quick_replies: qrs } });
+    case "button":
+      if (!buttons || buttons.length === 0) throw new Error("buttons array is required");
       const payloadButtons = buttons
         .slice(0, 3)
         .map((b) => ({
@@ -424,29 +354,17 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
           url: (b.url || b.link || "").toString(),
           title: (b.text || b.title || "Open").toString().slice(0, 20),
         }));
-
-      const body = {
+      return await doPost({
         recipient: sendRecipient,
         message: {
           attachment: {
             type: "template",
-            payload: {
-              template_type: "button",
-              text: message || "",
-              buttons: payloadButtons,
-            },
+            payload: { template_type: "button", text: message || "", buttons: payloadButtons },
           },
         },
-      };
-
-      return await doPost(body);
-    }
-
-    case "generic": {
-      if (!cards || cards.length === 0) {
-        throw new Error("cards array is required");
-      }
-
+      });
+    case "generic":
+      if (!cards || cards.length === 0) throw new Error("cards array is required");
       const elements = cards.slice(0, 10).map((card) => ({
         title: card.title,
         subtitle: card.subtitle || undefined,
@@ -461,45 +379,21 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
             ]
           : undefined,
       }));
-
-      const body = {
+      return await doPost({
         recipient: sendRecipient,
-        message: {
-          attachment: {
-            type: "template",
-            payload: {
-              template_type: "generic",
-              elements,
-            },
-          },
-        },
-      };
-
-      return await doPost(body);
-    }
-
-    case "media": {
-      if (!media_url) {
-        throw new Error("media_url required");
-      }
-      const body = {
+        message: { attachment: { type: "template", payload: { template_type: "generic", elements } } },
+      });
+    case "media":
+      if (!media_url) throw new Error("media_url required");
+      return await doPost({
         recipient: sendRecipient,
-        message: {
-          attachment: {
-            type: "image",
-            payload: { url: media_url },
-          },
-        },
-      };
-      return await doPost(body);
-    }
-
+        message: { attachment: { type: "image", payload: { url: media_url } } },
+      });
     default:
       throw new Error(`Unknown flow node type: ${type}`);
   }
 }
 
-// ---------- Handle user responses (postbacks/quick replies) ----------
 async function handlePostback(event) {
   const senderId = event.sender?.id;
   let payload, title;
@@ -531,19 +425,19 @@ async function handlePostback(event) {
   }
 
   const currentFlowId = conversation.currentFlowId;
-  const flowConfig = conversation.flowConfig;
-  const currentNode = currentFlowId === "initial"
-    ? flowConfig.initial
-    : flowConfig.flows?.[currentFlowId] || flowConfig.flows?.get?.(currentFlowId);
+  const flowConfig = conversation.flowConfig || [];
+
+  const currentNode = flowConfig.find((node) => node.id === currentFlowId);
 
   if (!currentNode) {
     console.error("❌ Current node not found:", currentFlowId);
     return;
   }
 
-  const nextFlowId = (currentNode.next_actions instanceof Map)
-    ? currentNode.next_actions.get(payload)
-    : currentNode.next_actions?.[payload];
+  const nextFlowId =
+    currentNode.next_actions instanceof Map
+      ? currentNode.next_actions.get(payload)
+      : currentNode.next_actions?.[payload];
 
   if (!nextFlowId) {
     console.log("🏁 Conversation completed");
@@ -553,7 +447,7 @@ async function handlePostback(event) {
     return;
   }
 
-  const nextNode = flowConfig.flows?.[nextFlowId] || flowConfig.flows?.get?.(nextFlowId);
+  const nextNode = flowConfig.find((node) => node.id === nextFlowId);
   if (!nextNode) {
     console.error("❌ Next node not found:", nextFlowId);
     return;
@@ -569,7 +463,6 @@ async function handlePostback(event) {
   }
 
   try {
-    // ALWAYS use user ID for follow-up messages (24hr window is open after user responds)
     await sendFlowMessage({
       recipient: { id: String(senderId) },
       flowNode: nextNode,
@@ -605,42 +498,41 @@ async function handleTextMessage(event) {
   const senderId = event.sender?.id;
   const text = event.message?.text;
   console.log("💬 Text message:", { senderId, text });
-  
-  // Check if user is responding to initial private reply
+
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
     currentFlowId: "awaiting_user_response",
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
-  
+
   if (conversation) {
     console.log("✅ User responded to initial message, 24hr window now open");
-    
+
     const creds = await ensureFreshPageTokenForUser(conversation.userId);
     const accessToken = creds.fbPageAccessToken;
     const fbPageId = creds.fbPageId;
-    
-    const initialNode = conversation.flowConfig.initial;
-    
+
+    // Send initial quick replies or first flow node
+    const initialNode = conversation.flowConfig.find((node) => node.id === "initial") || conversation.flowConfig[0];
+
     try {
-      // Now we can send quick replies using user ID
       await sendFlowMessage({
         recipient: { id: String(senderId) },
         flowNode: initialNode,
         pageAccessToken: accessToken,
         fbPageId: fbPageId,
       });
-      
-      conversation.currentFlowId = "initial";
+
+      conversation.currentFlowId = initialNode.id || "initial";
       conversation.addHistory({
-        flowId: "initial",
+        flowId: initialNode.id || "initial",
         flowName: "INITIAL",
         messageSent: initialNode.message,
         userReply: text,
       });
       await conversation.save();
-      
+
       console.log("✅ Quick replies sent after user text response");
     } catch (err) {
       console.error("❌ Failed to send quick replies:", err.message);
@@ -650,7 +542,6 @@ async function handleTextMessage(event) {
   }
 }
 
-// ========== PUB/SUB ENDPOINT: COMMENTS ==========
 app.post("/pubsub", async (req, res) => {
   try {
     console.log("📨 /pubsub called (comments)");
@@ -679,60 +570,50 @@ app.post("/pubsub", async (req, res) => {
     }
 
     await connectMongo();
+
     const commentEvents = await extractCommentEvents(envelope);
-    
     if (!commentEvents.length) {
       console.log("ℹ️ No comment events");
       return res.status(204).send();
     }
 
-    console.log(`📬 Processing ${commentEvents.length} comments`);
+    console.log(`📬 Processing ${commentEvents.length} comment(s)`);
 
     const userTokenCache = new Map();
 
     for (const c of commentEvents) {
-      const autos = await Automation.find({
+      const automations = await Automation.find({
         platform: "instagram",
         status: "active",
         postId: c.mediaId,
       }).lean();
 
-      if (!autos.length) {
-        console.log("ℹ️ No automation for media:", c.mediaId);
+      if (!automations.length) {
+        console.log("ℹ️ No active automation for media:", c.mediaId);
         continue;
       }
 
-      for (const auto of autos) {
-        const normalizedKeywords = auto.keywords.map(normalize).filter(Boolean);
-        const matched = normalizedKeywords.some((kw) => c.text.includes(kw));
-        
+      for (const auto of automations) {
+        const normalizedKeywords = (auto.keywords || []).map(normalize).filter(Boolean);
+        const matched = normalizedKeywords.length === 0 || normalizedKeywords.some((kw) => c.text.includes(kw));
         if (!matched) {
-          console.log("ℹ️ No keyword match");
+          console.log("ℹ️ No keyword match for comment:", c.text);
           continue;
         }
 
-        console.log("✅ Keyword matched");
-
-        const key = String(auto.userId);
-        let creds = userTokenCache.get(key);
+        let creds = userTokenCache.get(String(auto.userId));
         if (!creds) {
           creds = await ensureFreshPageTokenForUser(auto.userId);
-          userTokenCache.set(key, creds);
+          userTokenCache.set(String(auto.userId), creds);
         }
 
-        const accessToken = creds.fbPageAccessToken;
-        const fbPageId = creds.fbPageId;
-
+        const { fbPageAccessToken: accessToken, fbPageId } = creds;
         if (!accessToken || !fbPageId) {
-          console.warn("⚠️ Missing tokens");
+          console.warn("⚠️ Missing tokens for user:", auto.userId);
           continue;
         }
 
-        let publicSent = false;
-        let privateSent = false;
-
-        // PUBLIC REPLY
-        if (auto.hasPublicReply && auto.publicReply) {
+        if (auto.hasReply && auto.replyComment) {
           const { proceed } = await reserveAction({
             automationId: auto._id,
             commentId: c.commentId,
@@ -741,23 +622,17 @@ app.post("/pubsub", async (req, res) => {
 
           if (proceed) {
             try {
-              await replyToCommentPublic(c.commentId, auto.publicReply, accessToken);
-              publicSent = true;
+              await replyToCommentPublic(c.commentId, auto.replyComment, accessToken);
+              console.log("✅ Public reply sent for comment:", c.commentId);
+
               await finalizeAction({
                 automationId: auto._id,
                 commentId: c.commentId,
                 channel: "public",
                 ok: true,
               });
-              await RepliedComment.create({
-                commentId: c.commentId,
-                automationId: auto._id,
-                channel: "public",
-                text: c.text,
-                status: "sent",
-              });
             } catch (err) {
-              console.error("❌ Public reply failed", err.message);
+              console.error("❌ Public reply failed:", err.message);
               await finalizeAction({
                 automationId: auto._id,
                 commentId: c.commentId,
@@ -765,161 +640,96 @@ app.post("/pubsub", async (req, res) => {
                 ok: false,
                 error: { message: err.message },
               });
+              continue;
             }
+          } else {
+            console.log("ℹ️ Public action already done or reserved for comment:", c.commentId);
           }
         }
 
-        // PRIVATE REPLY - FIXED TO HANDLE BOTH SCENARIOS
-        if (auto.dm?.enabled && c.fromUserId) {
-          const { proceed } = await reserveAction({
-            automationId: auto._id,
-            commentId: c.commentId,
-            channel: "private",
-          });
+        const { proceed: canSendPrivate } = await reserveAction({
+          automationId: auto._id,
+          commentId: c.commentId,
+          channel: "private",
+        });
 
-          if (proceed) {
-            try {
-              const dmType = auto.dm.type || "simple";
+        if (canSendPrivate && auto.dmMessage && auto.buttonText) {
+          try {
+            const buttonPayload = {
+              type: "postback",
+              title: auto.buttonText,
+              payload: `POSTBACK_${auto.buttonText.toUpperCase().replace(/\s+/g, "_")}`,
+            };
 
-              if (dmType === "conversation_flow") {
-                console.log("🌊 Starting conversation flow");
-
-                const initialNode = auto.dm.flowConfig.initial;
-                
-                // CRITICAL: Check if initial node has quick replies
-                if (initialNode.type === "quick_replies") {
-                  console.log("⚠️ Quick replies detected - converting to button template for private reply");
-                  
-                  // Convert quick replies to button template (private replies don't support quick replies)
-                  // Send initial prompt, then when user responds, send actual quick replies
-                  const promptMessage = initialNode.message || "Please reply to continue...";
-                  
-                  await sendTextMessage({
-                    fbPageId,
-                    commentId: c.commentId,
-                    message: promptMessage,
-                    pageAccessToken: accessToken,
-                  });
-                  
-                  // Create conversation in "awaiting" state
-                  await ConversationState.create({
-                    userId: auto.userId,
-                    automationId: auto._id,
-                    commentId: c.commentId,
-                    igUserId: c.fromUserId,
-                    igUsername: c.fromUsername,
-                    currentFlowId: "awaiting_user_response",
-                    flowConfig: auto.dm.flowConfig,
-                    conversationHistory: [{
-                      flowId: "initial_prompt",
-                      flowName: "INITIAL_PROMPT",
-                      messageSent: promptMessage,
-                      timestamp: new Date(),
-                    }],
-                    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-                  });
-                  
-                } else {
-                  // Button template or text - can be sent as private reply
-                  await sendFlowMessage({
-                    recipient: { comment_id: String(c.commentId) },
-                    flowNode: initialNode,
-                    pageAccessToken: accessToken,
-                    fbPageId: fbPageId,
-                  });
-                  
-                  await ConversationState.create({
-                    userId: auto.userId,
-                    automationId: auto._id,
-                    commentId: c.commentId,
-                    igUserId: c.fromUserId,
-                    igUsername: c.fromUsername,
-                    currentFlowId: "initial",
-                    flowConfig: auto.dm.flowConfig,
-                    conversationHistory: [{
-                      flowId: "initial",
-                      flowName: "INITIAL",
-                      messageSent: initialNode.message,
-                      timestamp: new Date(),
-                    }],
-                    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                  });
-                }
-
-                await Automation.updateOne(
-                  { _id: auto._id },
-                  { $inc: { "runStats.flowConversationsStarted": 1 } }
-                );
-                
-              } else {
-                // Scenario 2: Simple private message with button
-                await sendPrivateReply({
-                  fbPageId,
-                  commentId: c.commentId,
-                  message: auto.dm.message,
-                  pageAccessToken: accessToken,
-                  button: auto.dm?.button,
-                });
-              }
-
-              // Fetch user details
-              const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
-              const { data: userDetails } = await axios.get(userDetailsUrl, {
-                params: {
-                  access_token: accessToken,
-                  fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
+            const url = `${FB_API}/${fbPageId}/messages`;
+            const messageBody = {
+              recipient: { comment_id: c.commentId },
+              message: {
+                attachment: {
+                  type: "template",
+                  payload: {
+                    template_type: "button",
+                    text: auto.dmMessage,
+                    buttons: [buttonPayload],
+                  },
                 },
-              });
+              },
+            };
 
-              privateSent = true;
-              await finalizeAction({
-                automationId: auto._id,
-                commentId: c.commentId,
-                channel: "private",
-                ok: true,
-              });
+            const { data, status } = await axios.post(url, messageBody, {
+              params: { access_token: accessToken },
+            });
 
-              await RepliedComment.create({
-                commentId: c.commentId,
-                automationId: auto._id,
-                channel: "private",
-                text: c.text,
-                sentMessage: dmType === "simple" ? auto.dm.message : auto.dm.flowConfig.initial.message,
-                status: "sent",
-                igUserId: userDetails.id,
-                username: userDetails.username,
-                profilePic: userDetails.profile_pic,
-                followsBusiness: userDetails.is_user_follow_business,
-                businessFollowsUser: userDetails.is_business_follow_user,
-              });
-
-              console.log("✅ Private reply sent");
-            } catch (err) {
-              console.error("❌ Private reply failed", err.message, err.details || err);
-              await finalizeAction({
-                automationId: auto._id,
-                commentId: c.commentId,
-                channel: "private",
-                ok: false,
-                error: { message: err.message, details: err.details },
-              });
+            if (status >= 400) {
+              throw new Error(`Button template send failed: ${JSON.stringify(data)}`);
             }
+
+            console.log("✅ Private DM with postback button sent for comment:", c.commentId);
+
+            const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
+            const { data: userDetails } = await axios.get(userDetailsUrl, {
+              params: {
+                access_token: accessToken,
+                fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
+              },
+            });
+
+            await RepliedComment.create({
+              commentId: c.commentId,
+              postId: c.mediaId,
+              automationId: auto._id,
+              channel: "private",
+              state: "sent",
+              text: c.text,
+              sentMessage: auto.dmMessage,
+              status: "completed",
+              igUserId: userDetails.id,
+              username: userDetails.username,
+              profilePic: userDetails.profile_pic,
+              followsBusiness: userDetails.is_user_follow_business,
+              businessFollowsUser: userDetails.is_business_follow_user,
+            });
+
+            await finalizeAction({
+              automationId: auto._id,
+              commentId: c.commentId,
+              channel: "private",
+              ok: true,
+            });
+          } catch (err) {
+            console.error("❌ Private DM with button failed:", err.message);
+            await finalizeAction({
+              automationId: auto._id,
+              commentId: c.commentId,
+              channel: "private",
+              ok: false,
+              error: { message: err.message },
+            });
           }
-        }
-
-        // Update stats
-        if (publicSent || privateSent) {
-          const inc = {};
-          if (publicSent) inc["runStats.repliesSent"] = 1;
-          if (privateSent) inc["runStats.dmsSent"] = 1;
-
-          await Automation.updateOne(
-            { _id: auto._id },
-            {
-              $set: { "runStats.lastRunAt": new Date() },
-              ...(Object.keys(inc).length ? { $inc: inc } : {}),
-            }
-          );
+        } else {
+          if (!canSendPrivate)
+            console.log("ℹ️ Private action already done or reserved for comment:", c.commentId);
+          else console.log("ℹ️ dmMessage or buttonText missing or DM disabled for automation:", auto._id);
         }
       }
     }
@@ -931,77 +741,7 @@ app.post("/pubsub", async (req, res) => {
   }
 });
 
-// ========== PUB/SUB ENDPOINT: MESSAGING ==========
-app.post("/pubsub-messaging", async (req, res) => {
-  try {
-    console.log("📨 /pubsub-messaging called");
-
-    if (PUBSUB_TOKEN) {
-      const headerToken = req.get("X-Pubsub-Token");
-      if (headerToken !== PUBSUB_TOKEN) {
-        console.warn("⚠️ Unauthorized");
-        return res.status(401).send("unauthorized");
-      }
-    }
-
-    const msg = req.body?.message;
-    if (!msg?.data) {
-      console.log("ℹ️ Empty message");
-      return res.status(204).send();
-    }
-
-    let envelope;
-    try {
-      const json = Buffer.from(msg.data, "base64").toString("utf8");
-      envelope = JSON.parse(json);
-    } catch (e) {
-      console.error("❌ Decode failed", e);
-      return res.status(204).send();
-    }
-
-    await connectMongo();
-
-    const entries = envelope?.body?.entry || [];
-    
-    if (!entries.length) {
-      console.log("ℹ️ No entries");
-      return res.status(204).send();
-    }
-    
-    for (const entry of entries) {
-      const messaging = entry?.messaging || [];
-      
-      console.log(`📬 Processing ${messaging.length} messaging events`);
-      
-      for (const event of messaging) {
-        if (event.postback) {
-          await handlePostback(event);
-          continue;
-        }
-
-        if (event.message?.quick_reply) {
-          await handlePostback(event);
-          continue;
-        }
-
-        if (event.message && !event.message.quick_reply) {
-          await handleTextMessage(event);
-        }
-
-        if (event.reaction) {
-          console.log("👍 Reaction:", event.reaction);
-        }
-      }
-    }
-
-    return res.status(204).send();
-  } catch (err) {
-    console.error("❌ /pubsub-messaging error", err.message, err.stack);
-    return res.status(500).send("error");
-  }
-});
-
-// Health check
+// Health check endpoints
 app.get("/", (_req, res) => res.status(200).send("ok"));
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
