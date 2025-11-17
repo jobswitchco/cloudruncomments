@@ -713,14 +713,15 @@ app.post("/pubsub", async (req, res) => {
       commentId: c.commentId,
       igUserId: c.fromUserId,
       igUsername: c.fromUsername,
-      currentFlowId: "initial",
-      flowConfig: auto.flowNodes,    // or auto.dm.flowConfig if you use that
-      conversationHistory: [{
-        flowId: "initial",
-        flowName: "INITIAL",
-        messageSent: auto.dmMessage,
-        timestamp: new Date(),
-      }],
+     currentFlowId: String(auto.flowNodes[0]?.id),  // first flow node id as string
+flowConfig: auto.flowNodes,
+conversationHistory: [{
+  flowId: String(auto.flowNodes[0]?.id),
+  flowName: "INITIAL",  // or some meaningful name
+  messageSent: auto.dmMessage,
+  timestamp: new Date(),
+}],
+
       status: "active",
       startedAt: new Date(),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days expiry
