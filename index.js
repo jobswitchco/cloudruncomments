@@ -766,53 +766,70 @@ app.post("/pubsub", async (req, res) => {
           channel: "private",
         });
 
-        if (canSendPrivate && auto.dmMessage && auto.buttonText) {
-          try {
-            const buttonPayload = {
-              type: "web_url",
-              url: "https://your-button-url.com", // Replace with your actual URL or logic
-              title: auto.buttonText,
-            };
+      if (canSendPrivate && auto.dmMessage && auto.buttonText) {
+  try {
+    // Prepare button template with postback button
+    const buttonPayload = {
+      type: "postback",
+      title: auto.buttonText,
+      payload: `POSTBACK_${auto.buttonText.toUpperCase().replace(/\s+/g, "_")}`, // e.g. POSTBACK_SEND_LINK
+    };
 
-            await sendPrivateReply({
-              fbPageId,
-              commentId: c.commentId,
-              message: auto.dmMessage,
-              pageAccessToken: accessToken,
-              button: buttonPayload,
-            });
+    // Send private reply with a button template attachment
+    const url = `${FB_API}/${fbPageId}/messages`;
+    const messageBody = {
+      recipient: { comment_id: c.commentId },
+      message: {
+        attachment: {
+          type: "template",
+          payload: {
+            template_type: "button",
+            text: auto.dmMessage,
+            buttons: [buttonPayload],
+          },
+        },
+      },
+    };
 
-            console.log("✅ Private DM sent for comment:", c.commentId);
+    const { data, status } = await axios.post(url, messageBody, {
+      params: { access_token: accessToken },
+    });
 
-            // Save in RepliedComment collection
-            await RepliedComment.create({
-              commentId: c.commentId,
-              automationId: auto._id,
-              channel: "private",
-              text: c.text,
-              sentMessage: auto.dmMessage,
-              status: "sent",
-              igUserId: c.fromUserId,
-              username: c.fromUsername,
-            });
+    if (status >= 400) {
+      throw new Error(`Button template send failed: ${JSON.stringify(data)}`);
+    }
 
-            await finalizeAction({
-              automationId: auto._id,
-              commentId: c.commentId,
-              channel: "private",
-              ok: true,
-            });
-          } catch (err) {
-            console.error("❌ Private DM failed:", err.message);
-            await finalizeAction({
-              automationId: auto._id,
-              commentId: c.commentId,
-              channel: "private",
-              ok: false,
-              error: { message: err.message },
-            });
-          }
-        } else {
+    console.log("✅ Private DM with postback button sent for comment:", c.commentId);
+
+    await RepliedComment.create({
+      commentId: c.commentId,
+      automationId: auto._id,
+      channel: "private",
+      text: c.text,
+      sentMessage: auto.dmMessage,
+      status: "sent",
+      igUserId: c.fromUserId,
+      username: c.fromUsername,
+    });
+
+    await finalizeAction({
+      automationId: auto._id,
+      commentId: c.commentId,
+      channel: "private",
+      ok: true,
+    });
+  } catch (err) {
+    console.error("❌ Private DM with button failed:", err.message);
+    await finalizeAction({
+      automationId: auto._id,
+      commentId: c.commentId,
+      channel: "private",
+      ok: false,
+      error: { message: err.message },
+    });
+  }
+}
+ else {
           if (!canSendPrivate) {
             console.log("ℹ️ Private action already done or reserved for comment:", c.commentId);
           } else {
