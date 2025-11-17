@@ -808,7 +808,7 @@ app.post("/pubsub", async (req, res) => {
       channel: "private",
       text: c.text,
       sentMessage: auto.dmMessage,
-      status: "sent",
+      state: "sent",
       igUserId: c.fromUserId,
       username: c.fromUsername,
     });
