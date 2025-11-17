@@ -887,7 +887,7 @@ async function handlePostback(event) {
   const currentFlowId = conversation.currentFlowId;
   const flowConfig = conversation.flowConfig || [];
 
-  const currentNode = flowConfig.find((node) => node.id === currentFlowId);
+const currentNode = flowConfig.find((node) => String(node.id) === String(currentFlowId));
 
   if (!currentNode) {
     console.error("❌ Current node not found:", currentFlowId);
