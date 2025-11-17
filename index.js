@@ -871,6 +871,7 @@ app.post("/pubsub", async (req, res) => {
 
 
 // ========== PUB/SUB ENDPOINT: MESSAGING ==========
+// ========== PUB/SUB ENDPOINT: MESSAGING ==========
 app.post("/pubsub-messaging", async (req, res) => {
   try {
     console.log("📨 /pubsub-messaging called");
@@ -901,18 +902,17 @@ app.post("/pubsub-messaging", async (req, res) => {
     await connectMongo();
 
     const entries = envelope?.body?.entry || [];
-    
     if (!entries.length) {
       console.log("ℹ️ No entries");
       return res.status(204).send();
     }
-    
+
     for (const entry of entries) {
       const messaging = entry?.messaging || [];
-      
       console.log(`📬 Processing ${messaging.length} messaging events`);
-      
+
       for (const event of messaging) {
+        // Handle user postback button clicks or quick replies
         if (event.postback) {
           await handlePostback(event);
           continue;
@@ -923,6 +923,7 @@ app.post("/pubsub-messaging", async (req, res) => {
           continue;
         }
 
+        // Handle plain text messages to carry the conversation forward after initial prompt
         if (event.message && !event.message.quick_reply) {
           await handleTextMessage(event);
         }
@@ -939,6 +940,159 @@ app.post("/pubsub-messaging", async (req, res) => {
     return res.status(500).send("error");
   }
 });
+
+// ---------- Handle user postbacks or quick replies ----------
+async function handlePostback(event) {
+  const senderId = event.sender?.id;
+  let payload, title;
+
+  if (event.postback) {
+    payload = event.postback.payload;
+    title = event.postback.title;
+  } else if (event.message?.quick_reply) {
+    payload = event.message.quick_reply.payload;
+    title = event.message.text;
+  }
+
+  if (!senderId || !payload) {
+    console.warn("Missing senderId or payload");
+    return;
+  }
+
+  console.log("📲 Postback/QuickReply received:", { senderId, payload, title });
+
+  const conversation = await ConversationState.findOne({
+    igUserId: senderId,
+    status: "active",
+    expiresAt: { $gt: new Date() },
+  }).sort({ startedAt: -1 });
+
+  if (!conversation) {
+    console.log("ℹ️ No active conversation found for user:", senderId);
+    return;
+  }
+
+  const currentFlowId = conversation.currentFlowId;
+  const flowConfig = conversation.flowConfig || [];
+
+  // Find current node in flowConfig by ID
+  const currentNode = flowConfig.find((node) => node.id === currentFlowId);
+
+  if (!currentNode) {
+    console.error("❌ Current node not found:", currentFlowId);
+    return;
+  }
+
+  // Determine next flow ID based on payload (next_actions mapping)
+  const nextFlowId =
+    currentNode.next_actions instanceof Map
+      ? currentNode.next_actions.get(payload)
+      : currentNode.next_actions?.[payload];
+
+  if (!nextFlowId) {
+    // No next step, complete conversation
+    console.log("🏁 Conversation completed");
+    conversation.markCompleted();
+    await conversation.save();
+    await Automation.updateOne(
+      { _id: conversation.automationId },
+      { $inc: { "runStats.flowConversationsCompleted": 1 } }
+    );
+    return;
+  }
+
+  const nextNode = flowConfig.find((node) => node.id === nextFlowId);
+  if (!nextNode) {
+    console.error("❌ Next node not found:", nextFlowId);
+    return;
+  }
+
+  const creds = await ensureFreshPageTokenForUser(conversation.userId);
+  const accessToken = creds.fbPageAccessToken;
+  const fbPageId = creds.fbPageId;
+
+  if (!accessToken || !fbPageId) {
+    console.error("❌ Missing credentials");
+    return;
+  }
+
+  try {
+    await sendFlowMessage({
+      recipient: { id: String(senderId) },
+      flowNode: nextNode,
+      pageAccessToken: accessToken,
+      fbPageId: fbPageId,
+    });
+
+    conversation.addHistory({
+      flowId: nextFlowId,
+      flowName: nextFlowId, // Could use nextNode.type or name for better display
+      messageSent: nextNode.message,
+      userReply: title,
+      userPayload: payload,
+    });
+
+    conversation.currentFlowId = nextFlowId;
+    await conversation.save();
+
+    console.log("✅ Flow message sent successfully");
+  } catch (err) {
+    console.error("❌ Failed to send next message:", err.message, err.details || err.stack);
+    conversation.markError(err);
+    await conversation.save();
+  }
+}
+
+// ---------- Handle user plain text (non-quick_reply) responses ----------
+async function handleTextMessage(event) {
+  const senderId = event.sender?.id;
+  const text = event.message?.text;
+  console.log("💬 Text message:", { senderId, text });
+
+  // Find conversation in "awaiting_user_response" state (after initial prompt)
+  const conversation = await ConversationState.findOne({
+    igUserId: senderId,
+    status: "active",
+    currentFlowId: "awaiting_user_response",
+    expiresAt: { $gt: new Date() },
+  }).sort({ startedAt: -1 });
+
+  if (conversation) {
+    console.log("✅ User responded to initial message, 24hr window now open");
+
+    const creds = await ensureFreshPageTokenForUser(conversation.userId);
+    const accessToken = creds.fbPageAccessToken;
+    const fbPageId = creds.fbPageId;
+
+    const initialNode = conversation.flowConfig.find((node) => node.id === "initial") || conversation.flowConfig[0];
+
+    try {
+      // Send quick replies now that 24-hr window is open
+      await sendFlowMessage({
+        recipient: { id: String(senderId) },
+        flowNode: initialNode,
+        pageAccessToken: accessToken,
+        fbPageId: fbPageId,
+      });
+
+      conversation.currentFlowId = initialNode.id || "initial";
+      conversation.addHistory({
+        flowId: initialNode.id || "initial",
+        flowName: "INITIAL",
+        messageSent: initialNode.message,
+        userReply: text,
+      });
+      await conversation.save();
+
+      console.log("✅ Quick replies sent after user text response");
+    } catch (err) {
+      console.error("❌ Failed to send quick replies:", err.message);
+      conversation.markError(err);
+      await conversation.save();
+    }
+  }
+}
+
 
 // Health check
 app.get("/", (_req, res) => res.status(200).send("ok"));
