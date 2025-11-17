@@ -1041,6 +1041,124 @@ async function handlePostback(event) {
   }
 
   console.log("📲 Postback/QuickReply received:", { senderId, payload, title });
+
+  // ============================================================================
+  // ✅ NEW: Handle nested quick reply selections (QR_NESTED_ prefix)
+  // ============================================================================
+  if (payload.startsWith("QR_NESTED_")) {
+    console.log("→ Processing nested quick reply selection");
+
+    const conversation = await ConversationState.findOne({
+      igUserId: senderId,
+      status: "active",
+      expiresAt: { $gt: new Date() },
+    }).sort({ startedAt: -1 });
+
+    if (!conversation) {
+      console.warn("⚠️ No conversation found for nested QR");
+      return;
+    }
+
+    const nestedConfig = conversation.currentNestedQuickReplyConfig;
+
+    if (!nestedConfig) {
+      console.warn("⚠️ No nested quick reply config found");
+      return;
+    }
+
+    const { nestedConfig: config } = nestedConfig;
+
+    // Extract option ID from payload: QR_NESTED_${parentNodeId}_${optionId}
+    const parts = payload.split("_");
+    const selectedOptionId = parts[parts.length - 1];
+
+    // Find selected option
+    const selectedNestedOption = config.replyOptions?.find(
+      (opt) => String(opt.id) === selectedOptionId
+    );
+
+    if (!selectedNestedOption) {
+      console.warn("⚠️ Nested option not found:", selectedOptionId);
+      return;
+    }
+
+    console.log("✅ User selected nested option:", selectedNestedOption.text);
+
+    // Add to history
+    conversation.addHistory({
+      flowId: String(nestedConfig.parentNodeId),
+      flowName: "NESTED_QUICK_REPLY",
+      messageSent: config.quickReplyQuestion,
+      userReply: selectedNestedOption.text,
+      userPayload: payload,
+    });
+
+    // ✅ Check if nested option has actions
+    if (selectedNestedOption.actions && selectedNestedOption.actions.length > 0) {
+      const action = selectedNestedOption.actions[0];
+
+      const creds = await ensureFreshPageTokenForUser(conversation.userId);
+      const accessToken = creds.fbPageAccessToken;
+      const fbPageId = creds.fbPageId;
+
+      if (!accessToken || !fbPageId) {
+        console.error("❌ Missing credentials");
+        conversation.markError(new Error("Missing credentials"));
+        await conversation.save();
+        return;
+      }
+
+      try {
+        if (action.type === "redirectLink") {
+          const redirectUrl = action.config?.redirectUrl || "https://example.com";
+
+          console.log("→ Executing nested redirect link action:", redirectUrl);
+
+          await sendFlowMessage({
+            recipient: { id: senderId },
+            flowNode: {
+              type: "button",
+              message: `You selected: ${selectedNestedOption.text} ✓`,
+              buttons: [
+                {
+                  type: "web_url",
+                  title: "Open Link",
+                  url: redirectUrl,
+                },
+              ],
+            },
+            pageAccessToken: accessToken,
+            fbPageId,
+          });
+
+          console.log("✅ Nested redirect action sent");
+        }
+        // Add more action types as needed
+      } catch (err) {
+        console.error("❌ Failed to execute nested action:", err.message);
+        conversation.markError(err);
+        await conversation.save();
+        return;
+      }
+    } else {
+      console.log("ℹ️ No actions configured for nested option");
+    }
+
+    // Mark conversation completed
+    conversation.markCompleted();
+    conversation.currentNestedQuickReplyConfig = null; // Clear nested config
+    await conversation.save();
+    await Automation.updateOne(
+      { _id: conversation.automationId },
+      { $inc: { "runStats.flowConversationsCompleted": 1 } }
+    );
+
+    return;
+  }
+
+  // ============================================================================
+  // HANDLE FLOW_START (Initial Button Click)
+  // ============================================================================
   if (payload.startsWith("FLOW_START_")) {
     console.log("→ User clicked initial button, opening 24hr window");
 
@@ -1079,7 +1197,7 @@ async function handlePostback(event) {
       // ✅ NOW send the flow node message (quick_replies, followCheck, etc)
       if (firstNode.type === "quickReply") {
         console.log("→ First node is quickReply, sending quick_replies");
-        
+
         await sendFlowNodeMessage({
           fbPageId,
           igUserId: senderId,
@@ -1098,9 +1216,7 @@ async function handlePostback(event) {
         await conversation.save();
 
         console.log("✅ Quick replies sent after button click");
-      } 
-      
-   else if (firstNode.type === "followCheck") {
+      } else if (firstNode.type === "followCheck") {
         console.log("→ First node is followCheck, checking user follow status");
 
         // ✅ FETCH USER FOLLOW STATUS FIRST
@@ -1244,6 +1360,10 @@ async function handlePostback(event) {
 
     return;
   }
+
+  // ============================================================================
+  // Main conversation flow handling
+  // ============================================================================
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
@@ -1310,6 +1430,61 @@ async function handlePostback(event) {
       }
 
       try {
+        // ✅ NEW: Handle nested quickReply
+        if (action.type === "quickReply") {
+          console.log("→ Executing nested quickReply action");
+
+          const nestedQuickReplyConfig = action.config;
+
+          if (!nestedQuickReplyConfig || !nestedQuickReplyConfig.quickReplyQuestion) {
+            console.warn("⚠️ Nested quick reply config missing");
+            conversation.markCompleted();
+            await conversation.save();
+            return;
+          }
+
+          // Build quick reply options from nested config
+          const nestedOptions = nestedQuickReplyConfig.replyOptions || [];
+          const quickReplies = nestedOptions
+            .slice(0, 13)
+            .map((option) => ({
+              content_type: "text",
+              title: (option.text || "Option").toString().slice(0, 20),
+              payload: `QR_NESTED_${currentNode.id}_${option.id}`,
+            }));
+
+          if (quickReplies.length === 0) {
+            console.warn("⚠️ No nested quick reply options available");
+            conversation.markCompleted();
+            await conversation.save();
+            return;
+          }
+
+          // Send nested quick_replies message
+          await sendFlowMessage({
+            recipient: { id: senderId },
+            flowNode: {
+              type: "quick_replies",
+              message: nestedQuickReplyConfig.quickReplyQuestion || "Choose one:",
+              quick_replies: quickReplies,
+            },
+            pageAccessToken: accessToken,
+            fbPageId,
+          });
+
+          console.log("✅ Nested quick replies sent");
+
+          // Store the nested quick reply config in conversation for next interaction
+          conversation.currentNestedQuickReplyConfig = {
+            parentNodeId: String(currentNode.id),
+            parentOptionId: String(selectedOption.id),
+            nestedConfig: nestedQuickReplyConfig,
+          };
+
+          await conversation.save();
+          return;
+        }
+
         // Execute the action (e.g., redirect link)
         if (action.type === "redirectLink") {
           const redirectUrl = action.config?.redirectUrl || "https://example.com";
@@ -1613,6 +1788,7 @@ async function handlePostback(event) {
     await conversation.save();
   }
 }
+
 
 
 
