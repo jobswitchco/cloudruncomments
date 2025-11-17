@@ -803,6 +803,7 @@ app.post("/pubsub", async (req, res) => {
 
     await RepliedComment.create({
       commentId: c.commentId,
+      postId: c.mediaId,
       automationId: auto._id,
       channel: "private",
       text: c.text,
