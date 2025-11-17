@@ -25,7 +25,7 @@ const RepliedCommentSchema = new Schema(
 
     status: {
       type: String,
-      enum: ["pending", "replied", "completed", "failed"],
+      enum: ["pending", "replied", "completed", "failed", "active"],
       default: "pending",
     },
   },
