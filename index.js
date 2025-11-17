@@ -1021,14 +1021,7 @@ async function sendQuickRepliesForNode({
   return data;
 }
 
-// ============================================================================
-// UPDATED: handlePostback Function (For Quick Replies and Regular Buttons)
-// ============================================================================
-// This function now handles:
-// 1. Quick reply payloads from quickReply nodes
-// 2. Postback button payloads from button nodes
-// 3. FollowCheck verification
-// 4. Flow continuation
+
 
 async function handlePostback(event) {
   const senderId = event.sender?.id;
@@ -1048,7 +1041,111 @@ async function handlePostback(event) {
   }
 
   console.log("📲 Postback/QuickReply received:", { senderId, payload, title });
+  if (payload.startsWith("FLOW_START_")) {
+    console.log("→ User clicked initial button, opening 24hr window");
 
+    const automationId = payload.replace("FLOW_START_", "");
+
+    const conversation = await ConversationState.findOne({
+      igUserId: senderId,
+      automationId: automationId,
+      status: "active",
+      expiresAt: { $gt: new Date() },
+    }).sort({ startedAt: -1 });
+
+    if (!conversation) {
+      console.log("ℹ️ No conversation found");
+      return;
+    }
+
+    const flowConfig = conversation.flowConfig || [];
+    const firstNode = flowConfig[0];
+
+    if (!firstNode) {
+      console.error("❌ No flow nodes configured");
+      return;
+    }
+
+    const creds = await ensureFreshPageTokenForUser(conversation.userId);
+    const accessToken = creds.fbPageAccessToken;
+    const fbPageId = creds.fbPageId;
+
+    if (!accessToken || !fbPageId) {
+      console.error("❌ Missing credentials");
+      return;
+    }
+
+    try {
+      // ✅ NOW send the flow node message (quick_replies, followCheck, etc)
+      if (firstNode.type === "quickReply") {
+        console.log("→ First node is quickReply, sending quick_replies");
+        
+        await sendFlowNodeMessage({
+          fbPageId,
+          igUserId: senderId,
+          pageAccessToken: accessToken,
+          flowNode: firstNode,
+        });
+
+        conversation.addHistory({
+          flowId: String(firstNode.id),
+          flowName: "QUICK_REPLY",
+          messageSent: firstNode.config?.quickReplyQuestion,
+          timestamp: new Date(),
+        });
+
+        conversation.currentFlowId = String(firstNode.id);
+        await conversation.save();
+
+        console.log("✅ Quick replies sent after button click");
+      } else if (firstNode.type === "followCheck") {
+        console.log("→ First node is followCheck, sending verification button");
+
+        const notFollowingButtons = firstNode.notFollowingButtons || [];
+        const verificationButton = notFollowingButtons[0];
+
+        if (verificationButton) {
+          const verificationPayload = `FOLLOWCHECK_RECHECK_${firstNode.id}`;
+
+          await sendFlowMessage({
+            recipient: { id: senderId },
+            flowNode: {
+              type: "button",
+              message: firstNode.config.followCheckNoMessage,
+              buttons: [
+                {
+                  type: "postback",
+                  title: verificationButton.text,
+                  payload: verificationPayload,
+                },
+              ],
+            },
+            pageAccessToken: accessToken,
+            fbPageId,
+          });
+
+          conversation.addHistory({
+            flowId: String(firstNode.id),
+            flowName: "FOLLOW_CHECK",
+            messageSent: firstNode.config.followCheckNoMessage,
+            timestamp: new Date(),
+          });
+
+          conversation.currentFlowId = String(firstNode.id);
+          await conversation.save();
+
+          console.log("✅ FollowCheck verification button sent");
+        }
+      }
+    } catch (err) {
+      console.error("❌ Failed to send flow message:", err.message);
+      conversation.markError(err);
+      await conversation.save();
+    }
+
+    return;
+  }
+  
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
