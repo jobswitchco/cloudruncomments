@@ -12,7 +12,7 @@ import ConversationState from "./models/ConversationState.js";
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
-const PORT = process.env.PORT || 8080;
+const PORT = 8080;
 const PUBSUB_TOKEN = process.env.PUBSUB_TOKEN || "";
 const META_APP_ID = "1360956302356492";
 const META_APP_SECRET = "2b21c578035bd7b96b24ba43e4479a52";
