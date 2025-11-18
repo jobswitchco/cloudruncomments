@@ -1181,12 +1181,6 @@ async function executeQuickReplyNode({
   fbPageId,
 }) {
 
-  console.log('flowNode : ', flowNode);
-  console.log('conversation : ', conversation);
-  console.log('senderId : ', senderId);
-  console.log('pageAccessToken : ', pageAccessToken);
-  console.log('fbPageId : ', fbPageId);
-
   const quickReplies = (flowNode.replyOptions || [])
     .slice(0, 13)
     .map((option) => ({
@@ -1210,48 +1204,41 @@ async function executeQuickReplyNode({
 
   console.log("→ Sending quick_replies to user:", senderId);
 
-  const { data: qrData, status: qrStatus } = await http.post(url, qrBody, {
-    params: { access_token: pageAccessToken },
-  });
-
-  if (qrStatus >= 400) {
-    throw new Error(`Quick replies failed: ${JSON.stringify(qrData)}`);
-  }
-
+  // ✅ SINGLE POST REQUEST with proper error handling
   try {
-  const response = await http.post(url, qrBody, {
-    params: { access_token: pageAccessToken },
-  });
-  if (response.status >= 400) {
-    console.error("Facebook API error data:", response.data);
-    throw new Error(`Quick replies failed: ${JSON.stringify(response.data)}`);
+    const { data, status } = await http.post(url, qrBody, {
+      params: { access_token: pageAccessToken },
+    });
+    
+    if (status >= 400) {
+      console.error("Facebook API error data:", data);
+      throw new Error(`Quick replies failed: ${JSON.stringify(data)}`);
+    }
+    
+    console.log("✅ Quick replies sent");
+
+    // Update conversation
+    conversation.addHistory({
+      flowId: String(flowNode.id),
+      flowName: "QUICK_REPLY",
+      messageSent: flowNode.config?.quickReplyQuestion,
+      timestamp: new Date(),
+    });
+
+    conversation.currentFlowId = String(flowNode.id);
+    await conversation.save();
+
+    return { success: true, data };
+    
+  } catch (err) {
+    if (err.response) {
+      console.error("FB API response error status:", err.response.status);
+      console.error("FB API response error data:", err.response.data);
+    } else {
+      console.error("Error in HTTP request:", err.message);
+    }
+    throw err;
   }
-  return response.data;
-} catch (err) {
-  if (err.response) {
-    console.error("FB API response error status:", err.response.status);
-    console.error("FB API response error data:", err.response.data);
-  } else {
-    console.error("Error in HTTP request:", err.message);
-  }
-  throw err;
-}
-
-
-  console.log("✅ Quick replies sent");
-
-  // Update conversation
-  conversation.addHistory({
-    flowId: String(flowNode.id),
-    flowName: "QUICK_REPLY",
-    messageSent: flowNode.config?.quickReplyQuestion,
-    timestamp: new Date(),
-  });
-
-  conversation.currentFlowId = String(flowNode.id);
-  await conversation.save();
-
-  return { success: true };
 }
 
 /**
