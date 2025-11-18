@@ -1564,7 +1564,7 @@ async function handlePostback(event) {
           selectedOption: selectedNestedOption,
           conversation,
           senderId,
-          pageAccessToken,
+          accessToken,
           fbPageId,
           parentNodeId,
         });
@@ -1595,7 +1595,7 @@ async function handlePostback(event) {
           flowNode: nextNode,
           conversation,
           senderId,
-          pageAccessToken,
+          accessToken,
           fbPageId,
         });
 
@@ -1661,7 +1661,7 @@ async function handlePostback(event) {
         flowNode: firstNode,
         conversation,
         senderId,
-        pageAccessToken,
+        accessToken,
         fbPageId,
       });
 
@@ -1714,7 +1714,7 @@ async function handlePostback(event) {
         flowNode: followCheckNode,
         conversation,
         senderId,
-        pageAccessToken,
+        accessToken,
         fbPageId,
       });
 
@@ -1729,7 +1729,7 @@ async function handlePostback(event) {
             flowNode: nextNode,
             conversation,
             senderId,
-            pageAccessToken,
+            accessToken,
             fbPageId,
           });
         } else {
@@ -1820,7 +1820,7 @@ async function handlePostback(event) {
           selectedOption,
           conversation,
           senderId,
-          pageAccessToken,
+          accessToken,
           fbPageId,
           parentNodeId: currentNode.id,
         });
@@ -1848,7 +1848,7 @@ async function handlePostback(event) {
           flowNode: nextNode,
           conversation,
           senderId,
-          pageAccessToken,
+          accessToken,
           fbPageId,
         });
 
