@@ -300,25 +300,21 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
 
 // ---------- Action Locking ----------
 async function reserveAction({ automationId, commentId, channel }) {
+  const now = new Date();
   try {
-    const doc = await ActionLock.findOneAndUpdate(
-      { automationId, commentId, channel },
-      {
-        $setOnInsert: {
-          state: "reserved",
-          reservedAt: new Date(),
-        },
-      },
+    const res = await ActionLock.findOneAndUpdate(
+      { automationId, commentId, channel, state: { $ne: "sent" } },
+      { $setOnInsert: { automationId, commentId, channel, state: "reserved", reservedAt: now } },
       { upsert: true, new: true }
-    ).lean();
-
-    if (doc.state !== "reserved" || !doc.reservedAt) return { proceed: false, doc };
-    return { proceed: true, doc };
-  } catch (e) {
-    if (e?.code === 11000) return { proceed: false, error: e };
-    throw e;
+    );
+    const proceed = res.state === "reserved";
+    return { proceed };
+  } catch (err) {
+    console.error("reserveAction error", err);
+    return { proceed: false };
   }
 }
+
 
 async function finalizeAction({ automationId, commentId, channel, ok, error }) {
   const update = ok
@@ -1042,145 +1038,9 @@ async function handlePostback(event) {
 
   console.log("📲 Postback/QuickReply received:", { senderId, payload, title });
 
-  // Recursive or iterative helper to process any flow node dynamically
-  async function processFlowNode(conversation, flowNode) {
-    const creds = await ensureFreshPageTokenForUser(conversation.userId);
-    const accessToken = creds.fbPageAccessToken;
-    const fbPageId = creds.fbPageId;
-    if (!accessToken || !fbPageId) throw new Error("Missing credentials");
-
-    conversation.currentFlowId = String(flowNode.id);
-
-    switch (flowNode.type) {
-      case "quickReply": {
-        // send quick_replies options
-        const quickReplies = (flowNode.replyOptions || []).slice(0, 13).map((opt) => ({
-          content_type: "text",
-          title: (opt.text || "Option").toString().slice(0, 20),
-          payload: `QR_${flowNode.id}_${opt.id}`,
-        }));
-        if (quickReplies.length === 0) throw new Error("No quick reply options");
-        await sendFlowMessage({
-          recipient: { id: senderId },
-          flowNode: {
-            type: "quick_replies",
-            message: flowNode.config?.quickReplyQuestion || "Choose one:",
-            quick_replies: quickReplies,
-          },
-          pageAccessToken: accessToken,
-          fbPageId,
-        });
-        await conversation.save();
-        console.log("✅ Quick replies sent");
-        break;
-      }
-      case "followCheck": {
-        // fetch follow status and send appropriate flow node
-        const userDetailsUrl = `${FB_API}/${senderId}`;
-        let userDetails;
-        try {
-          const res = await axios.get(userDetailsUrl, {
-            params: {
-              access_token: accessToken,
-              fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
-            },
-          });
-          userDetails = res.data;
-        } catch {
-          userDetails = { is_user_follow_business: false };
-        }
-        const isFollowing = userDetails.is_user_follow_business === true;
-        if (isFollowing) {
-          const buttons = flowNode.followingButtons || [];
-          if (buttons.length === 0) {
-            conversation.markCompleted();
-            await conversation.save();
-            return;
-          }
-          const btn = buttons[0];
-          if (btn.actions?.length) {
-            const action = btn.actions[0];
-            await sendFlowMessage({
-              recipient: { id: senderId },
-              flowNode: {
-                type: "button",
-                message: flowNode.config.followCheckYesMessage,
-                buttons: [{
-                  type: "web_url",
-                  title: btn.text,
-                  url: action.config?.redirectUrl || "https://example.com",
-                }],
-              },
-              pageAccessToken: accessToken,
-              fbPageId,
-            });
-          } else {
-            await sendFlowMessage({
-              recipient: { id: senderId },
-              flowNode: { type: "text", message: flowNode.config.followCheckYesMessage },
-              pageAccessToken: accessToken,
-              fbPageId,
-            });
-          }
-          conversation.addHistory({
-            flowId: String(flowNode.id),
-            flowName: "FOLLOW_CHECK_SUCCESS",
-            messageSent: flowNode.config.followCheckYesMessage,
-            userReply: "Following confirmed",
-            userPayload: null,
-          });
-          conversation.markCompleted();
-          await conversation.save();
-        } else {
-          const buttons = flowNode.notFollowingButtons || [];
-          if (buttons.length === 0) {
-            conversation.markCompleted();
-            await conversation.save();
-            return;
-          }
-          const verificationBtn = buttons[0];
-          const verificationPayload = `FOLLOWCHECK_RECHECK_${flowNode.id}`;
-          await sendFlowMessage({
-            recipient: { id: senderId },
-            flowNode: {
-              type: "button",
-              message: flowNode.config.followCheckNoMessage,
-              buttons: [{ type: "postback", title: verificationBtn.text, payload: verificationPayload }],
-            },
-            pageAccessToken: accessToken,
-            fbPageId,
-          });
-          conversation.addHistory({
-            flowId: String(flowNode.id),
-            flowName: "FOLLOW_CHECK_RETRY",
-            messageSent: flowNode.config.followCheckNoMessage,
-            userReply: "Not following, retrying",
-            userPayload: verificationPayload,
-          });
-          conversation.currentFlowId = String(flowNode.id);
-          await conversation.save();
-        }
-        break;
-      }
-      case "button":
-      case "text": {
-        await sendFlowMessage({
-          recipient: { id: senderId },
-          flowNode,
-          pageAccessToken: accessToken,
-          fbPageId,
-        });
-        conversation.currentFlowId = String(flowNode.id);
-        await conversation.save();
-        console.log(`✅ Message sent for ${flowNode.type} node`);
-        break;
-      }
-      default:
-        throw new Error(`Unsupported flow node type: ${flowNode.type}`);
-    }
-  }
-
-  // Handle nested quick reply selections for arbitrary depth by prefix 'QR_NESTED_...'
+  // ============================================================================
+  // ✅ NEW: Handle nested quick reply selections (QR_NESTED_ prefix)
+  // ============================================================================
   if (payload.startsWith("QR_NESTED_")) {
     console.log("→ Processing nested quick reply selection");
 
@@ -1191,29 +1051,36 @@ async function handlePostback(event) {
     }).sort({ startedAt: -1 });
 
     if (!conversation) {
-      console.warn("⚠️ No active conversation found for nested QR");
+      console.warn("⚠️ No conversation found for nested QR");
       return;
     }
 
     const nestedConfig = conversation.currentNestedQuickReplyConfig;
+
     if (!nestedConfig) {
-      console.warn("⚠️ No nested quick reply config saved");
+      console.warn("⚠️ No nested quick reply config found");
       return;
     }
 
     const { nestedConfig: config } = nestedConfig;
+
+    // Extract option ID from payload: QR_NESTED_${parentNodeId}_${optionId}
     const parts = payload.split("_");
     const selectedOptionId = parts[parts.length - 1];
 
-    const selectedNestedOption = config.replyOptions.find(opt => String(opt.id) === selectedOptionId);
+    // Find selected option
+    const selectedNestedOption = config.replyOptions?.find(
+      (opt) => String(opt.id) === selectedOptionId
+    );
 
     if (!selectedNestedOption) {
-      console.warn("⚠️ Nested option not found for payload:", payload);
+      console.warn("⚠️ Nested option not found:", selectedOptionId);
       return;
     }
 
     console.log("✅ User selected nested option:", selectedNestedOption.text);
 
+    // Add to history
     conversation.addHistory({
       flowId: String(nestedConfig.parentNodeId),
       flowName: "NESTED_QUICK_REPLY",
@@ -1222,8 +1089,10 @@ async function handlePostback(event) {
       userPayload: payload,
     });
 
-    if (selectedNestedOption.actions?.length) {
+    // ✅ Check if nested option has actions
+    if (selectedNestedOption.actions && selectedNestedOption.actions.length > 0) {
       const action = selectedNestedOption.actions[0];
+
       const creds = await ensureFreshPageTokenForUser(conversation.userId);
       const accessToken = creds.fbPageAccessToken;
       const fbPageId = creds.fbPageId;
@@ -1234,24 +1103,35 @@ async function handlePostback(event) {
         await conversation.save();
         return;
       }
+
       try {
         if (action.type === "redirectLink") {
           const redirectUrl = action.config?.redirectUrl || "https://example.com";
+
+          console.log("→ Executing nested redirect link action:", redirectUrl);
+
           await sendFlowMessage({
             recipient: { id: senderId },
             flowNode: {
               type: "button",
               message: `You selected: ${selectedNestedOption.text} ✓`,
-              buttons: [{ type: "web_url", title: "Open Link", url: redirectUrl }],
+              buttons: [
+                {
+                  type: "web_url",
+                  title: "Open Link",
+                  url: redirectUrl,
+                },
+              ],
             },
             pageAccessToken: accessToken,
             fbPageId,
           });
+
           console.log("✅ Nested redirect action sent");
         }
-        // Additional action types can be supported here
+        // Add more action types as needed
       } catch (err) {
-        console.error("❌ Failed nested action:", err.message);
+        console.error("❌ Failed to execute nested action:", err.message);
         conversation.markError(err);
         await conversation.save();
         return;
@@ -1260,22 +1140,29 @@ async function handlePostback(event) {
       console.log("ℹ️ No actions configured for nested option");
     }
 
+    // Mark conversation completed
     conversation.markCompleted();
-    conversation.currentNestedQuickReplyConfig = null;
+    conversation.currentNestedQuickReplyConfig = null; // Clear nested config
     await conversation.save();
-    await Automation.updateOne({ _id: conversation.automationId }, { $inc: { "runStats.flowConversationsCompleted": 1 } });
-    
+    await Automation.updateOne(
+      { _id: conversation.automationId },
+      { $inc: { "runStats.flowConversationsCompleted": 1 } }
+    );
+
     return;
   }
 
-  // Handle initial button click flow start (FLOW_START_...)
+  // ============================================================================
+  // HANDLE FLOW_START (Initial Button Click)
+  // ============================================================================
   if (payload.startsWith("FLOW_START_")) {
-    console.log("→ User clicked initial button");
+    console.log("→ User clicked initial button, opening 24hr window");
 
     const automationId = payload.replace("FLOW_START_", "");
+
     const conversation = await ConversationState.findOne({
       igUserId: senderId,
-      automationId,
+      automationId: automationId,
       status: "active",
       expiresAt: { $gt: new Date() },
     }).sort({ startedAt: -1 });
@@ -1287,29 +1174,192 @@ async function handlePostback(event) {
 
     const flowConfig = conversation.flowConfig || [];
     const firstNode = flowConfig[0];
+
     if (!firstNode) {
       console.error("❌ No flow nodes configured");
       return;
     }
 
+    const creds = await ensureFreshPageTokenForUser(conversation.userId);
+    const accessToken = creds.fbPageAccessToken;
+    const fbPageId = creds.fbPageId;
+
+    if (!accessToken || !fbPageId) {
+      console.error("❌ Missing credentials");
+      return;
+    }
+
     try {
-      await processFlowNode(conversation, firstNode);
-      conversation.addHistory({
-        flowId: String(firstNode.id),
-        flowName: firstNode.type.toUpperCase(),
-        messageSent: firstNode.config?.quickReplyQuestion || firstNode.message || "",
-        timestamp: new Date(),
-      });
+      // ✅ NOW send the flow node message (quick_replies, followCheck, etc)
+      if (firstNode.type === "quickReply") {
+        console.log("→ First node is quickReply, sending quick_replies");
+
+        await sendFlowNodeMessage({
+          fbPageId,
+          igUserId: senderId,
+          pageAccessToken: accessToken,
+          flowNode: firstNode,
+        });
+
+        conversation.addHistory({
+          flowId: String(firstNode.id),
+          flowName: "QUICK_REPLY",
+          messageSent: firstNode.config?.quickReplyQuestion,
+          timestamp: new Date(),
+        });
+
+        conversation.currentFlowId = String(firstNode.id);
+        await conversation.save();
+
+        console.log("✅ Quick replies sent after button click");
+      } else if (firstNode.type === "followCheck") {
+        console.log("→ First node is followCheck, checking user follow status");
+
+        // ✅ FETCH USER FOLLOW STATUS FIRST
+        const userDetailsUrl = `${FB_API}/${senderId}`;
+        let userDetails;
+        try {
+          const response = await axios.get(userDetailsUrl, {
+            params: {
+              access_token: accessToken,
+              fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
+            },
+          });
+          userDetails = response.data;
+        } catch (err) {
+          console.error("❌ Failed to fetch user follow status:", err.message);
+          userDetails = { is_user_follow_business: false };
+        }
+
+        const isFollowing = userDetails.is_user_follow_business === true;
+
+        console.log("🔍 Follow Status Check:", {
+          userId: senderId,
+          isFollowing,
+        });
+
+        // ✅ CHECK IF USER IS FOLLOWING
+        if (isFollowing) {
+          console.log("✅ User IS following! Showing following branch");
+
+          const followingButtons = firstNode.followingButtons || [];
+
+          if (followingButtons.length === 0) {
+            console.warn("⚠️ No following buttons configured");
+            conversation.markCompleted();
+            await conversation.save();
+            return;
+          }
+
+          const followingButton = followingButtons[0];
+
+          if (followingButton.actions && followingButton.actions.length > 0) {
+            const action = followingButton.actions[0];
+
+            try {
+              await sendFlowMessage({
+                recipient: { id: senderId },
+                flowNode: {
+                  type: "button",
+                  message: firstNode.config.followCheckYesMessage,
+                  buttons: [
+                    {
+                      type: "web_url",
+                      title: followingButton.text,
+                      url: action.config?.redirectUrl || "https://example.com",
+                    },
+                  ],
+                },
+                pageAccessToken: accessToken,
+                fbPageId,
+              });
+
+              console.log("✅ Following branch button sent");
+            } catch (err) {
+              console.error("❌ Failed to send following button:", err.message);
+            }
+          } else {
+            try {
+              await sendFlowMessage({
+                recipient: { id: senderId },
+                flowNode: {
+                  type: "text",
+                  message: firstNode.config.followCheckYesMessage,
+                },
+                pageAccessToken: accessToken,
+                fbPageId,
+              });
+
+              console.log("✅ Following branch message sent");
+            } catch (err) {
+              console.error("❌ Failed to send message:", err.message);
+            }
+          }
+
+          conversation.addHistory({
+            flowId: String(firstNode.id),
+            flowName: "FOLLOW_CHECK_SUCCESS",
+            messageSent: firstNode.config.followCheckYesMessage,
+            userReply: "Following verified",
+            userPayload: "FOLLOWING_VERIFIED",
+          });
+
+          conversation.currentFlowId = String(firstNode.id);
+          await conversation.save();
+
+          console.log("✅ FollowCheck completed - user is following");
+        } else {
+          console.log("❌ User NOT following. Showing verification button");
+
+          const notFollowingButtons = firstNode.notFollowingButtons || [];
+          const verificationButton = notFollowingButtons[0];
+
+          if (verificationButton) {
+            const verificationPayload = `FOLLOWCHECK_RECHECK_${firstNode.id}`;
+
+            await sendFlowMessage({
+              recipient: { id: senderId },
+              flowNode: {
+                type: "button",
+                message: firstNode.config.followCheckNoMessage,
+                buttons: [
+                  {
+                    type: "postback",
+                    title: verificationButton.text,
+                    payload: verificationPayload,
+                  },
+                ],
+              },
+              pageAccessToken: accessToken,
+              fbPageId,
+            });
+
+            conversation.addHistory({
+              flowId: String(firstNode.id),
+              flowName: "FOLLOW_CHECK_RETRY",
+              messageSent: firstNode.config.followCheckNoMessage,
+              timestamp: new Date(),
+            });
+
+            conversation.currentFlowId = String(firstNode.id);
+            await conversation.save();
+
+            console.log("✅ FollowCheck verification button sent");
+          }
+        }
+      }
     } catch (err) {
-      console.error("❌ Failed to send flow node message:", err.message);
+      console.error("❌ Failed to send flow message:", err.message);
       conversation.markError(err);
       await conversation.save();
     }
+
     return;
   }
 
-  // Handle continuation of existing conversation
-
+  // ============================================================================
+  // Main conversation flow handling
+  // ============================================================================
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
@@ -1317,31 +1367,41 @@ async function handlePostback(event) {
   }).sort({ startedAt: -1 });
 
   if (!conversation) {
-    console.log("ℹ️ No active conversation found");
+    console.log("ℹ️ No active conversation found for user:", senderId);
     return;
   }
 
   const currentFlowId = conversation.currentFlowId;
   const flowConfig = conversation.flowConfig || [];
-  const currentNode = flowConfig.find(node => String(node.id) === String(currentFlowId));
+
+  const currentNode = flowConfig.find((node) => String(node.id) === String(currentFlowId));
+
   if (!currentNode) {
-    console.error("❌ Current node not found");
+    console.error("❌ Current node not found:", currentFlowId);
     return;
   }
 
+  // ============================================================================
+  // HANDLE QUICKREPLY NODE TYPE
+  // ============================================================================
   if (currentNode.type === "quickReply") {
-    console.log("→ Processing Quick Reply");
+    console.log("→ Processing Quick Reply from quickReply node");
 
-    const selectedOption = currentNode.replyOptions.find(
-      opt => payload === `QR_${currentNode.id}_${opt.id}` || payload === `QR_${currentNode.id}_${currentNode.replyOptions.indexOf(opt)}`
+    // Find which option was selected
+    const selectedOption = currentNode.replyOptions?.find(
+      (opt) =>
+        payload === `QR_${currentNode.id}_${opt.id}` ||
+        payload === `QR_${currentNode.id}_${currentNode.replyOptions.indexOf(opt)}`
     );
+
     if (!selectedOption) {
-      console.warn("⚠️ Selected option not found");
+      console.warn("⚠️ Selected option not found for payload:", payload);
       return;
     }
 
     console.log("✅ User selected:", selectedOption.text);
 
+    // Add to history
     conversation.addHistory({
       flowId: String(currentNode.id),
       flowName: "QUICK_REPLY",
@@ -1350,8 +1410,10 @@ async function handlePostback(event) {
       userPayload: payload,
     });
 
-    if (selectedOption.actions?.length) {
+    // ✅ Check if this option has actions
+    if (selectedOption.actions && selectedOption.actions.length > 0) {
       const action = selectedOption.actions[0];
+
       const creds = await ensureFreshPageTokenForUser(conversation.userId);
       const accessToken = creds.fbPageAccessToken;
       const fbPageId = creds.fbPageId;
@@ -1364,49 +1426,81 @@ async function handlePostback(event) {
       }
 
       try {
+        // ✅ NEW: Handle nested quickReply
         if (action.type === "quickReply") {
           console.log("→ Executing nested quickReply action");
 
           const nestedQuickReplyConfig = action.config;
 
-          if (!nestedQuickReplyConfig || !nestedQuickReplyConfig.quickReplyQuestion || !nestedQuickReplyConfig.replyOptions) {
-            console.warn("⚠️ Nested quick reply config missing or incomplete");
+          if (!nestedQuickReplyConfig || !nestedQuickReplyConfig.quickReplyQuestion) {
+            console.warn("⚠️ Nested quick reply config missing");
             conversation.markCompleted();
             await conversation.save();
             return;
           }
 
+          // Build quick reply options from nested config
+          const nestedOptions = nestedQuickReplyConfig.replyOptions || [];
+          const quickReplies = nestedOptions
+            .slice(0, 13)
+            .map((option) => ({
+              content_type: "text",
+              title: (option.text || "Option").toString().slice(0, 20),
+              payload: `QR_NESTED_${currentNode.id}_${option.id}`,
+            }));
+
+          if (quickReplies.length === 0) {
+            console.warn("⚠️ No nested quick reply options available");
+            conversation.markCompleted();
+            await conversation.save();
+            return;
+          }
+
+          // Send nested quick_replies message
           await sendFlowMessage({
             recipient: { id: senderId },
             flowNode: {
               type: "quick_replies",
-              message: nestedQuickReplyConfig.quickReplyQuestion,
-              quick_replies: nestedQuickReplyConfig.replyOptions.map(opt => ({
-                content_type: "text",
-                title: opt.text.slice(0, 20),
-                payload: `QR_NESTED_${currentNode.id}_${opt.id}`,
-              })),
+              message: nestedQuickReplyConfig.quickReplyQuestion || "Choose one:",
+              quick_replies: quickReplies,
             },
             pageAccessToken: accessToken,
             fbPageId,
           });
 
+          console.log("✅ Nested quick replies sent");
+
+          // Store the nested quick reply config in conversation for next interaction
           conversation.currentNestedQuickReplyConfig = {
             parentNodeId: String(currentNode.id),
             parentOptionId: String(selectedOption.id),
             nestedConfig: nestedQuickReplyConfig,
           };
-          await conversation.save();
-          console.log("✅ Nested quick replies sent");
-        } else if (action.type === "redirectLink") {
-          const redirectUrl = action.config?.redirectUrl || "https://example.com";
 
+          await conversation.save();
+          return;
+        }
+
+        // Execute the action (e.g., redirect link)
+        if (action.type === "redirectLink") {
+          const redirectUrl = action.config?.redirectUrl || "https://example.com";
+          const instagramPage = action.config?.instagramPage || "";
+
+          console.log("→ Executing redirect link action:", redirectUrl);
+
+          // Send message with button containing the redirect URL
           await sendFlowMessage({
             recipient: { id: senderId },
             flowNode: {
               type: "button",
               message: `You selected: ${selectedOption.text} ✓`,
-              buttons: [{ type: "web_url", title: "Open Link", url: redirectUrl }],
+              buttons: [
+                {
+                  type: "web_url",
+                  title: "Open Link",
+                  url: redirectUrl,
+                },
+              ],
             },
             pageAccessToken: accessToken,
             fbPageId,
@@ -1414,20 +1508,28 @@ async function handlePostback(event) {
 
           console.log("✅ Redirect action sent");
         } else if (action.type === "nextFlow") {
+          // Move to next flow node if action specifies it
           const nextFlowId = action.config?.nextFlowId;
           if (nextFlowId) {
-            const nextNode = flowConfig.find(node => node.id === nextFlowId);
+            const nextNode = flowConfig.find((node) => node.id === nextFlowId);
             if (nextNode) {
-              await processFlowNode(conversation, nextNode);
-              conversation.addHistory({
-                flowId: nextFlowId,
-                flowName: nextFlowId,
-                messageSent: nextNode.message,
-                userReply: title,
-                userPayload: payload,
-              });
-              await conversation.save();
-              console.log("✅ Next flow node sent");
+              conversation.currentFlowId = nextFlowId;
+
+              try {
+                await sendFlowMessage({
+                  recipient: { id: senderId },
+                  flowNode: nextNode,
+                  pageAccessToken: accessToken,
+                  fbPageId,
+                });
+
+                console.log("✅ Next flow node sent");
+              } catch (err) {
+                console.error("❌ Failed to send next flow node:", err.message);
+                conversation.markError(err);
+                await conversation.save();
+                return;
+              }
             }
           }
         }
@@ -1438,9 +1540,11 @@ async function handlePostback(event) {
         return;
       }
     } else {
+      // No actions - just mark this step and move to next or complete
       console.log("ℹ️ No actions configured for this option");
     }
 
+    // Mark conversation completed if no next node
     conversation.markCompleted();
     await conversation.save();
     await Automation.updateOne(
@@ -1451,6 +1555,9 @@ async function handlePostback(event) {
     return;
   }
 
+  // ============================================================================
+  // HANDLE FOLLOWCHECK NODE TYPE
+  // ============================================================================
   if (currentNode.type === "followCheck") {
     console.log("→ Processing FollowCheck verification");
 
@@ -1463,6 +1570,7 @@ async function handlePostback(event) {
       return;
     }
 
+    // Fetch user follow status from Instagram API
     const userDetailsUrl = `${FB_API}/${senderId}`;
     let userDetails;
     try {
@@ -1480,19 +1588,29 @@ async function handlePostback(event) {
 
     const isFollowing = userDetails.is_user_follow_business === true;
 
-    console.log("🔍 Follow Status Check:", { userId: senderId, isFollowing });
+    console.log("🔍 Follow Status Check:", {
+      userId: senderId,
+      isFollowing,
+    });
 
+    // ========== USER IS FOLLOWING ==========
     if (isFollowing) {
+      console.log("✅ User is following! Proceeding with following branch...");
+
       const followingButtons = currentNode.followingButtons || [];
+
       if (followingButtons.length === 0) {
         console.warn("⚠️ No following buttons configured");
         conversation.markCompleted();
         await conversation.save();
         return;
       }
+
       const followingButton = followingButtons[0];
+
       if (followingButton.actions && followingButton.actions.length > 0) {
         const action = followingButton.actions[0];
+
         try {
           await sendFlowMessage({
             recipient: { id: senderId },
@@ -1510,6 +1628,7 @@ async function handlePostback(event) {
             pageAccessToken: accessToken,
             fbPageId,
           });
+
           console.log("✅ Following branch button sent");
         } catch (err) {
           console.error("❌ Failed to send following button:", err.message);
@@ -1525,6 +1644,7 @@ async function handlePostback(event) {
             pageAccessToken: accessToken,
             fbPageId,
           });
+
           console.log("✅ Following branch message sent");
         } catch (err) {
           console.error("❌ Failed to send message:", err.message);
@@ -1545,17 +1665,26 @@ async function handlePostback(event) {
         { _id: conversation.automationId },
         { $inc: { "runStats.flowConversationsCompleted": 1 } }
       );
+
       return;
-    } else {
+    }
+
+    // ========== USER IS NOT FOLLOWING ==========
+    else {
+      console.log("❌ User not following. Showing verification button again...");
+
       const notFollowingButtons = currentNode.notFollowingButtons || [];
+
       if (notFollowingButtons.length === 0) {
         console.warn("⚠️ No notFollowing buttons configured");
         conversation.markCompleted();
         await conversation.save();
         return;
       }
+
       const verificationButton = notFollowingButtons[0];
       const verificationPayload = `FOLLOWCHECK_RECHECK_${currentNode.id}`;
+
       try {
         await sendFlowMessage({
           recipient: { id: senderId },
@@ -1573,10 +1702,12 @@ async function handlePostback(event) {
           pageAccessToken: accessToken,
           fbPageId,
         });
+
         console.log("✅ Verification button sent again");
       } catch (err) {
         console.error("❌ Failed to send verification button:", err.message);
       }
+
       conversation.addHistory({
         flowId: String(currentNode.id),
         flowName: "FOLLOW_CHECK_RETRY",
@@ -1584,12 +1715,18 @@ async function handlePostback(event) {
         userReply: "Not following, retrying",
         userPayload: verificationPayload,
       });
+
+      // Keep active for retry
       await conversation.save();
+
       return;
     }
   }
 
-  // Handle standard flow continuation
+  // ============================================================================
+  // HANDLE STANDARD FLOW NODES
+  // ============================================================================
+
   const nextFlowId =
     currentNode.next_actions instanceof Map
       ? currentNode.next_actions.get(payload)
@@ -1606,7 +1743,7 @@ async function handlePostback(event) {
     return;
   }
 
-  const nextNode = flowConfig.find(node => node.id === nextFlowId);
+  const nextNode = flowConfig.find((node) => node.id === nextFlowId);
   if (!nextNode) {
     console.error("❌ Next node not found:", nextFlowId);
     return;
@@ -1628,6 +1765,7 @@ async function handlePostback(event) {
       pageAccessToken: accessToken,
       fbPageId,
     });
+
     conversation.addHistory({
       flowId: nextFlowId,
       flowName: nextFlowId,
@@ -1635,8 +1773,10 @@ async function handlePostback(event) {
       userReply: title,
       userPayload: payload,
     });
+
     conversation.currentFlowId = nextFlowId;
     await conversation.save();
+
     console.log("✅ Next flow node sent");
   } catch (err) {
     console.error("❌ Failed to send next node:", err.message, err.details || err.stack);
@@ -1644,8 +1784,6 @@ async function handlePostback(event) {
     await conversation.save();
   }
 }
-
-
 
 
 

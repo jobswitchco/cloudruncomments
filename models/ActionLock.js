@@ -17,7 +17,8 @@ const ActionLockSchema = new Schema(
 );
 
 // Unique constraint index
-ActionLockSchema.index({ automationId: 1, commentId: 1, channel: 1 });
+ActionLockSchema.index({ automationId: 1, commentId: 1, channel: 1 }, { unique: true });
+
 
 // Query optimization index for (automationId, channel, state) queries
 ActionLockSchema.index({ automationId: 1, channel: 1, state: 1 });
