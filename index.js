@@ -304,32 +304,89 @@ async function reserveAction({ automationId, postId, igUserId, commentText, comm
   const textHash = crypto.createHash('md5').update(commentText || '').digest('hex');
   
   try {
-    const res = await ActionLock.findOneAndUpdate(
-      { automationId, postId, igUserId, textHash, channel, state: { $ne: "sent" } },
-      { $setOnInsert: { automationId, postId, igUserId, textHash, channel, commentId, state: "reserved", reservedAt: now } },
-      { upsert: true, new: true }
-    );
-    const proceed = res.state === "reserved";
-    return { proceed };
+    // Attempt to create a NEW lock document with state "reserved"
+    // This will FAIL if a document already exists (due to unique index)
+    const newLock = await ActionLock.create({
+      automationId,
+      postId,
+      igUserId,
+      textHash,
+      commentId,
+      channel,
+      state: "reserved",
+      reservedAt: now,
+    });
+
+    console.log(`✅ Lock acquired for ${channel}:`, commentId);
+    return { proceed: true };
+    
   } catch (err) {
-    console.error("reserveAction error", err);
+    // Duplicate key error (E11000) means lock already exists
+    if (err.code === 11000) {
+      console.log(`ℹ️ Action already processed for ${channel}:`, commentId);
+      return { proceed: false };
+    }
+    
+    // Other errors should be logged and block the action
+    console.error("❌ reserveAction error:", err.message);
     return { proceed: false };
   }
 }
 
+// ============================================================================
+// FIXED: finalizeAction with better error handling
+// ============================================================================
 async function finalizeAction({ automationId, postId, igUserId, commentText, commentId, channel, ok, error }) {
   const textHash = crypto.createHash('md5').update(commentText || '').digest('hex');
+  
   try {
-    await ActionLock.updateOne(
-      { automationId, postId, igUserId, textHash, channel, commentId },
+    const update = {
+      state: ok ? "sent" : "failed",
+      sentAt: ok ? new Date() : null,
+      error: error || null,
+    };
+
+    const result = await ActionLock.updateOne(
       { 
-        state: ok ? "sent" : "failed", 
-        sentAt: ok ? new Date() : null, 
-        error: error || null 
-      }
+        automationId, 
+        postId, 
+        igUserId, 
+        textHash, 
+        channel, 
+        commentId,
+        state: "reserved" // Only update if still in reserved state
+      },
+      { $set: update }
     );
+
+    if (result.matchedCount === 0) {
+      console.warn(`⚠️ No reserved lock found to finalize for ${channel}:`, commentId);
+    } else {
+      console.log(`✅ Lock finalized for ${channel}:`, commentId, ok ? "SUCCESS" : "FAILED");
+    }
+    
   } catch (err) {
-    console.error("finalizeAction error", err);
+    console.error("❌ finalizeAction error:", err.message);
+  }
+}
+
+// ============================================================================
+// OPTIONAL: Cleanup function to remove old failed/expired reservations
+// ============================================================================
+async function cleanupStaleLocks() {
+  const staleThreshold = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
+  
+  try {
+    const result = await ActionLock.deleteMany({
+      state: "reserved",
+      reservedAt: { $lt: staleThreshold }
+    });
+    
+    if (result.deletedCount > 0) {
+      console.log(`🧹 Cleaned up ${result.deletedCount} stale locks`);
+    }
+  } catch (err) {
+    console.error("❌ cleanupStaleLocks error:", err.message);
   }
 }
 
@@ -601,158 +658,167 @@ app.post("/pubsub", async (req, res) => {
 
     const userTokenCache = new Map();
 
-    for (const c of commentEvents) {
-      const automations = await Automation.find({
-        platform: "instagram",
-        status: "active",
+ for (const c of commentEvents) {
+  const automations = await Automation.find({
+    platform: "instagram",
+    status: "active",
+    postId: c.mediaId,
+  }).lean();
+
+  if (!automations.length) {
+    console.log("ℹ️ No active automation for media:", c.mediaId);
+    continue;
+  }
+
+  for (const auto of automations) {
+    // Keyword matching
+    const normalizedKeywords = (auto.keywords || []).map(normalize).filter(Boolean);
+    const matched = normalizedKeywords.length === 0 || normalizedKeywords.some((kw) => c.text.includes(kw));
+    if (!matched) {
+      console.log("ℹ️ No keyword match for comment:", c.text);
+      continue;
+    }
+
+    // Fetch tokens (with caching)
+    let creds = userTokenCache.get(String(auto.userId));
+    if (!creds) {
+      creds = await ensureFreshPageTokenForUser(auto.userId);
+      userTokenCache.set(String(auto.userId), creds);
+    }
+
+    const { fbPageAccessToken: accessToken, fbPageId } = creds;
+    if (!accessToken || !fbPageId) {
+      console.warn("⚠️ Missing tokens for user:", auto.userId);
+      continue;
+    }
+
+    // ========== PUBLIC REPLY ==========
+    if (auto.hasReply && auto.replyComment) {
+      const { proceed } = await reserveAction({
+        automationId: auto._id,
         postId: c.mediaId,
-      }).lean();
+        igUserId: c.fromUserId,
+        commentText: c.text,
+        commentId: c.commentId,
+        channel: "public",
+      });
 
-      if (!automations.length) {
-        console.log("ℹ️ No active automation for media:", c.mediaId);
-        continue;
-      }
+      if (proceed) {
+        try {
+          await replyToCommentPublic(c.commentId, auto.replyComment, accessToken);
+          console.log("✅ Public reply sent:", c.commentId);
 
-      for (const auto of automations) {
-        // Keyword matching updated
-        const normalizedKeywords = (auto.keywords || []).map(normalize).filter(Boolean);
-        const matched = normalizedKeywords.length === 0 || normalizedKeywords.some((kw) => c.text.includes(kw));
-        if (!matched) {
-          console.log("ℹ️ No keyword match for comment:", c.text);
-          continue;
-        }
-
-        // Fetch tokens caching
-        let creds = userTokenCache.get(String(auto.userId));
-        if (!creds) {
-          creds = await ensureFreshPageTokenForUser(auto.userId);
-          userTokenCache.set(String(auto.userId), creds);
-        }
-
-        const { fbPageAccessToken: accessToken, fbPageId } = creds;
-        if (!accessToken || !fbPageId) {
-          console.warn("⚠️ Missing tokens for user:", auto.userId);
-          continue;
-        }
-
-        // Public reply only if hasReply = true and replyComment provided
-        if (auto.hasReply && auto.replyComment) {
-          const { proceed } = await reserveAction({
+          await finalizeAction({
             automationId: auto._id,
             postId: c.mediaId,
             igUserId: c.fromUserId,
             commentText: c.text,
             commentId: c.commentId,
             channel: "public",
+            ok: true,
           });
-
-          if (proceed) {
-            try {
-              await replyToCommentPublic(c.commentId, auto.replyComment, accessToken);
-              console.log("✅ Public reply sent for comment:", c.commentId);
-
-              await finalizeAction({
-                automationId: auto._id,
-                postId: c.mediaId,
-                igUserId: c.fromUserId,
-                commentText: c.text,
-                commentId: c.commentId,
-                channel: "public",
-                ok: true,
-              });
-            } catch (err) {
-              console.error("❌ Public reply failed:", err.message);
-              await finalizeAction({
-                automationId: auto._id,
-                commentId: c.commentId,
-                channel: "public",
-                ok: false,
-                error: { message: err.message },
-              });
-              continue; // Skip DM if public reply failed
-            }
-          } else {
-            console.log("ℹ️ Public action already done or reserved for comment:", c.commentId);
-          }
+        } catch (err) {
+          console.error("❌ Public reply failed:", err.message);
+          
+          await finalizeAction({
+            automationId: auto._id,
+            postId: c.mediaId,
+            igUserId: c.fromUserId,
+            commentText: c.text,
+            commentId: c.commentId,
+            channel: "public",
+            ok: false,
+            error: { message: err.message },
+          });
+          
+          continue; // Skip private DM if public reply failed
         }
-
-        // Private one-time DM sending
-        const { proceed: canSendPrivate } = await reserveAction({
-          automationId: auto._id,
-          postId : c.mediaId,
-          igUserId : c.fromUserId,
-          commentText: c.text,
-          commentId: c.commentId,
-          channel: "private",
-        });
-
-if (canSendPrivate && auto.dmMessage && auto.buttonText) {
-  try {
-    // ONLY send initial button DM
-    await sendInitialDM({
-      fbPageId,
-      commentId: c.commentId,
-      automation: auto,
-      pageAccessToken: accessToken,
-      igUserId: c.fromUserId,
-      igUsername: c.fromUsername,
-    });
-
-    // Fetch and save user details
-    const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
-    const { data: userDetails } = await axios.get(userDetailsUrl, {
-      params: {
-        access_token: accessToken,
-        fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
-      },
-    });
-
-    await RepliedComment.create({
-      commentId: c.commentId,
-      postId: c.mediaId,
-      automationId: auto._id,
-      channel: "private",
-      state: "sent",
-      text: c.text,
-      sentMessage: auto.dmMessage,
-      status: "pending",
-      igUserId: userDetails.id,
-      username: userDetails.username,
-      profilePic: userDetails.profile_pic,
-      followsBusiness: userDetails.is_user_follow_business,
-      businessFollowsUser: userDetails.is_business_follow_user,
-    });
-
-    await finalizeAction({
-      automationId: auto._id,
-      commentId: c.commentId,
-      channel: "private",
-      ok: true,
-    });
-
-    console.log("✅ Initial DM sent, waiting for user click");
-  } catch (err) {
-    console.error("❌ Failed:", err.message);
-    await finalizeAction({
-      automationId: auto._id,
-      commentId: c.commentId,
-      channel: "private",
-      ok: false,
-      error: { message: err.message },
-    });
-  }
-}
-
-
- else {
-          if (!canSendPrivate) {
-            console.log("ℹ️ Private action already done or reserved for comment:", c.commentId);
-          } else {
-            console.log("ℹ️ dmMessage or buttonText missing or DM disabled for automation:", auto._id);
-          }
-        }
+      } else {
+        console.log("ℹ️ Public reply already sent for:", c.commentId);
       }
     }
+
+    // ========== PRIVATE DM ==========
+    if (auto.dmMessage && auto.buttonText) {
+      const { proceed: canSendPrivate } = await reserveAction({
+        automationId: auto._id,
+        postId: c.mediaId,
+        igUserId: c.fromUserId,
+        commentText: c.text,
+        commentId: c.commentId,
+        channel: "private",
+      });
+
+      if (canSendPrivate) {
+        try {
+          // Send initial DM
+          await sendInitialDM({
+            fbPageId,
+            commentId: c.commentId,
+            automation: auto,
+            pageAccessToken: accessToken,
+            igUserId: c.fromUserId,
+            igUsername: c.fromUsername,
+          });
+
+          // Fetch user details
+          const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
+          const { data: userDetails } = await axios.get(userDetailsUrl, {
+            params: {
+              access_token: accessToken,
+              fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
+            },
+          });
+
+          // Save to RepliedComment
+          await RepliedComment.create({
+            commentId: c.commentId,
+            postId: c.mediaId,
+            automationId: auto._id,
+            channel: "private",
+            state: "sent",
+            text: c.text,
+            sentMessage: auto.dmMessage,
+            status: "pending",
+            igUserId: userDetails.id,
+            username: userDetails.username,
+            profilePic: userDetails.profile_pic,
+            followsBusiness: userDetails.is_user_follow_business,
+            businessFollowsUser: userDetails.is_business_follow_user,
+          });
+
+          await finalizeAction({
+            automationId: auto._id,
+            postId: c.mediaId,
+            igUserId: c.fromUserId,
+            commentText: c.text,
+            commentId: c.commentId,
+            channel: "private",
+            ok: true,
+          });
+
+          console.log("✅ Private DM sent:", c.commentId);
+          
+        } catch (err) {
+          console.error("❌ Private DM failed:", err.message);
+          
+          await finalizeAction({
+            automationId: auto._id,
+            postId: c.mediaId,
+            igUserId: c.fromUserId,
+            commentText: c.text,
+            commentId: c.commentId,
+            channel: "private",
+            ok: false,
+            error: { message: err.message },
+          });
+        }
+      } else {
+        console.log("ℹ️ Private DM already sent for:", c.commentId);
+      }
+    }
+  }
+}
 
     return res.status(204).send();
   } catch (err) {
