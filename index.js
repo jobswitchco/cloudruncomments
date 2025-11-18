@@ -1597,7 +1597,7 @@ async function handlePostback(event) {
           selectedOption: selectedNestedOption,
           conversation,
           senderId,
-          accessToken,
+          pageAccessToken: accessToken,
           fbPageId,
           parentNodeId,
         });
@@ -1747,7 +1747,7 @@ async function handlePostback(event) {
         flowNode: followCheckNode,
         conversation,
         senderId,
-        accessToken,
+        pageAccessToken: accessToken,
         fbPageId,
       });
 
@@ -1855,7 +1855,7 @@ async function handlePostback(event) {
           selectedOption,
           conversation,
           senderId,
-          accessToken,
+          pageAccessToken: accessToken,
           fbPageId,
           parentNodeId: currentNode.id,
         });
