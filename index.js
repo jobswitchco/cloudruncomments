@@ -679,6 +679,9 @@ app.post("/pubsub", async (req, res) => {
         // Private one-time DM sending
         const { proceed: canSendPrivate } = await reserveAction({
           automationId: auto._id,
+          postId : c.mediaId,
+          igUserId : c.fromUserId,
+          commentText: c.text,
           commentId: c.commentId,
           channel: "private",
         });
