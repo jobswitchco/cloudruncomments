@@ -1548,10 +1548,6 @@ async function handlePostback(event) {
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
 
-      const creds = await ensureFreshPageTokenForUser(conversation.userId);
-    const accessToken = creds.fbPageAccessToken;
-    const fbPageId = creds.fbPageId;
-
   if (!conversation) {
     console.warn("⚠️ No conversation found");
     return;
@@ -1601,7 +1597,9 @@ async function handlePostback(event) {
       userPayload: payload,
     });
 
-
+    const creds = await ensureFreshPageTokenForUser(conversation.userId);
+    const accessToken = creds.fbPageAccessToken;
+    const fbPageId = creds.fbPageId;
 
     if (!accessToken || !fbPageId) {
       console.error("❌ Missing credentials");
@@ -1724,6 +1722,10 @@ async function handlePostback(event) {
     status: "active",
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
+
+   const creds = await ensureFreshPageTokenForUser(conversation.userId);
+    const accessToken = creds.fbPageAccessToken;
+    const fbPageId = creds.fbPageId;
 
   if (!conversation) {
     console.log("ℹ️ No conversation found");
