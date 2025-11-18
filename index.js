@@ -1606,12 +1606,51 @@ async function handlePostback(event) {
           // Another nested level - wait for user response
           return;
         }
+
+        // FIX: If action completed successfully (like redirectLink), continue to next node
+        if (actionResult.completed) {
+          console.log("✅ Nested action completed");
+          
+          // Clear nested config
+          conversation.currentNestedQuickReplyConfig = null;
+          
+          // Find next node after parent node
+          const flowConfig = conversation.flowConfig || [];
+          const nextNode = getNextFlowNode(flowConfig, parentNodeId);
+
+          if (nextNode) {
+            console.log(`→ Moving to next node: ${nextNode.id} (${nextNode.type})`);
+
+            await executeFlowNode({
+              flowNode: nextNode,
+              conversation,
+              senderId,
+              pageAccessToken: accessToken,
+              fbPageId,
+            });
+
+            console.log("✅ Next flow node executed");
+            return;
+          } else {
+            console.log("🏁 Flow completed (no more nodes)");
+            conversation.markCompleted();
+            await conversation.save();
+            await Automation.updateOne(
+              { _id: conversation.automationId },
+              { $inc: { "runStats.flowConversationsCompleted": 1 } }
+            );
+            return;
+          }
+        }
       } catch (err) {
         console.error("❌ Failed to execute nested action:", err.message);
         conversation.markError(err);
         await conversation.save();
         return;
       }
+    } else {
+      // FIX: No actions on this nested option - just complete and move to next node
+      console.log("ℹ️ No actions for nested option, moving to next node");
     }
 
     // ✅ Clear nested config and find next node
@@ -1762,9 +1801,7 @@ async function handlePostback(event) {
             flowNode: nextNode,
             conversation,
             senderId,
-       
-        pageAccessToken: accessToken,
-
+            pageAccessToken: accessToken,
             fbPageId,
           });
         } else {
@@ -1884,7 +1921,6 @@ async function handlePostback(event) {
           conversation,
           senderId,
           pageAccessToken: accessToken,
-
           fbPageId,
         });
 
