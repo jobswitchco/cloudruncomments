@@ -1713,58 +1713,86 @@ async function handlePostback(event) {
   // ============================================================================
   // HANDLE FLOW_START (Initial Button Click)
   // ============================================================================
-  if (payload.startsWith("FLOW_START_")) {
-    console.log("→ User clicked initial button");
+ if (payload.startsWith("FLOW_START_")) {
+  const automationId = payload.replace("FLOW_START_", "");
 
-    const automationId = payload.replace("FLOW_START_", "");
+  const conversation = await ConversationState.findOne({
+    igUserId: senderId,
+    automationId,
+    status: "active",
+    expiresAt: { $gt: new Date() },
+  }).sort({ startedAt: -1 });
 
-    const conversation = await ConversationState.findOne({
-      igUserId: senderId,
-      automationId: automationId,
-      status: "active",
-      expiresAt: { $gt: new Date() },
-    }).sort({ startedAt: -1 });
-
-    if (!conversation) {
-      console.log("ℹ️ No conversation found");
-      return;
-    }
-
-    const flowConfig = conversation.flowConfig || [];
-    const firstNode = flowConfig[0];
-
-    if (!firstNode) {
-      console.error("❌ No flow nodes configured");
-      return;
-    }
-
-    const creds = await ensureFreshPageTokenForUser(conversation.userId);
-    const accessToken = creds.fbPageAccessToken;
-    const fbPageId = creds.fbPageId;
-
-    if (!accessToken || !fbPageId) {
-      console.error("❌ Missing credentials");
-      return;
-    }
-
-    try {
-      await executeFlowNode({
-        flowNode: firstNode,
-        conversation,
-        senderId,
-        pageAccessToken: accessToken,
-        fbPageId,
-      });
-
-      console.log("✅ First flow node executed");
-    } catch (err) {
-      console.error("❌ Failed to execute first node:", err.message);
-      conversation.markError(err);
-      await conversation.save();
-    }
-
+  if (!conversation) {
+    console.log("ℹ️ No conversation found");
     return;
   }
+
+  const flowConfig = conversation.flowConfig || [];
+  const firstNode = flowConfig[0];
+
+  if (!firstNode) {
+    console.error("❌ No flow nodes configured");
+    return;
+  }
+
+  // Detect if buttonText action links to nested quickReply node
+  if (firstNode.type === "followCheck") {
+    // Usually button sends this flow
+    const followingButtons = firstNode.followingButtons || [];
+
+    // Find the button pressed, e.g. "Open Maps"
+    // Assuming payload or event carries the button pressed info
+    const pressedButton = followingButtons.find(btn => btn.text === title || btn.id === payload);
+    if (pressedButton && pressedButton.actions && pressedButton.actions.length > 0) {
+      const action = pressedButton.actions[0]; // Usually one action
+      if (action.type === "quickReply") {
+        // Find the nested quickReply node in flowConfig by id
+        const nestedFlowNodeId = action.id || action.config?.id;
+        const nestedNode = flowConfig.find((node) => String(node.id) === String(nestedFlowNodeId));
+
+        if (!nestedNode) {
+          console.error("❌ Nested quickReply node not found in flowConfig");
+          return;
+        }
+
+        // Update conversation to nested quick reply node
+        conversation.currentFlowId = String(nestedNode.id);
+        await conversation.save();
+
+        // Send nested quick reply node message
+        await executeQuickReplyNode({
+          flowNode: nestedNode,
+          conversation,
+          senderId,
+          pageAccessToken,
+          fbPageId,
+        });
+
+        console.log("✅ Nested quick replies sent after button click");
+        return;
+      }
+    }
+  }
+
+  // Otherwise, proceed normal flow execution for firstNode:
+  try {
+    await executeFlowNode({
+      flowNode: firstNode,
+      conversation,
+      senderId,
+      pageAccessToken,
+      fbPageId,
+    });
+    console.log("✅ First flow node executed");
+  } catch (err) {
+    console.error("❌ Failed to execute first node:", err.message);
+    conversation.markError(err);
+    await conversation.save();
+  }
+  return;
+}
+
 
   // ============================================================================
   // HANDLE FOLLOWCHECK RECHECK
