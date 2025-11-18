@@ -1180,6 +1180,13 @@ async function executeQuickReplyNode({
   pageAccessToken,
   fbPageId,
 }) {
+
+  console.log('flowNode : ', flowNode);
+  console.log('conversation : ', conversation);
+  console.log('senderId : ', senderId);
+  console.log('pageAccessToken : ', pageAccessToken);
+  console.log('fbPageId : ', fbPageId);
+  
   const quickReplies = (flowNode.replyOptions || [])
     .slice(0, 13)
     .map((option) => ({
