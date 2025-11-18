@@ -500,17 +500,30 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
       return await doPost(body);
     }
 
-    case "button": {
+ case "button": {
       if (!buttons || buttons.length === 0) {
         throw new Error("buttons array is required");
       }
+
       const payloadButtons = buttons
         .slice(0, 3)
-        .map((b) => ({
-          type: "web_url",
-          url: (b.url || b.link || "").toString(),
-          title: (b.text || b.title || "Open").toString().slice(0, 20),
-        }));
+        .map((b) => {
+          // 1. Check if it is explicitly a Postback button (has payload)
+          if (b.type === "postback" || b.payload) {
+            return {
+              type: "postback",
+              title: (b.text || b.title || "Select").toString().slice(0, 20),
+              payload: (b.payload || "EMPTY_PAYLOAD").toString(),
+            };
+          }
+
+          // 2. Otherwise, treat it as a URL button (Standard behavior)
+          return {
+            type: "web_url",
+            url: (b.url || b.link || "").toString(),
+            title: (b.text || b.title || "Open").toString().slice(0, 20),
+          };
+        });
 
       const body = {
         recipient: sendRecipient,
@@ -519,7 +532,7 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
             type: "template",
             payload: {
               template_type: "button",
-              text: message || "",
+              text: message || "Please choose:",
               buttons: payloadButtons,
             },
           },
