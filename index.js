@@ -1274,46 +1274,16 @@ async function executeFollowCheckNode({
   console.log("🔍 Follow Status:", { userId: senderId, isFollowing });
 
   if (isFollowing) {
-    // User is following - send success message and button
-    const followingButtons = flowNode.followingButtons || [];
-
-    if (followingButtons.length === 0) {
-      console.warn("⚠️ No following buttons configured");
-      return { success: true, completed: true };
-    }
-
-    const followingButton = followingButtons[0];
-
-    if (followingButton.actions && followingButton.actions.length > 0) {
-      const action = followingButton.actions[0];
-
-      await sendFlowMessage({
-        recipient: { id: senderId },
-        flowNode: {
-          type: "button",
-          message: flowNode.config.followCheckYesMessage,
-          buttons: [
-            {
-              type: "web_url",
-              title: followingButton.text,
-              url: action.config?.redirectUrl || "https://example.com",
-            },
-          ],
-        },
-        pageAccessToken,
-        fbPageId,
-      });
-    } else {
-      await sendFlowMessage({
-        recipient: { id: senderId },
-        flowNode: {
-          type: "text",
-          message: flowNode.config.followCheckYesMessage,
-        },
-        pageAccessToken,
-        fbPageId,
-      });
-    }
+    // User is following - send success message first
+    await sendFlowMessage({
+      recipient: { id: senderId },
+      flowNode: {
+        type: "text",
+        message: flowNode.config.followCheckYesMessage,
+      },
+      pageAccessToken,
+      fbPageId,
+    });
 
     conversation.addHistory({
       flowId: String(flowNode.id),
@@ -1325,7 +1295,30 @@ async function executeFollowCheckNode({
     conversation.currentFlowId = String(flowNode.id);
     await conversation.save();
 
-    console.log("✅ FollowCheck completed - user is following");
+    // Now execute the button action directly (just like nested quick reply actions)
+    const followingButtons = flowNode.followingButtons || [];
+    if (followingButtons.length > 0 && followingButtons[0].actions && followingButtons[0].actions.length > 0) {
+      const action = followingButtons[0].actions[0];
+      
+      console.log("→ Executing followCheck button action:", action.type);
+
+      try {
+        await executeAction({
+          action,
+          selectedOption: { text: followingButtons[0].text, id: followingButtons[0].id },
+          conversation,
+          senderId,
+          pageAccessToken,
+          fbPageId,
+          parentNodeId: flowNode.id,
+        });
+        
+        console.log("✅ FollowCheck action executed");
+      } catch (err) {
+        console.error("❌ Failed to execute followCheck action:", err.message);
+      }
+    }
+
     return { success: true, completed: true };
   } else {
     // User not following - send verification button
