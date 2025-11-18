@@ -333,9 +333,6 @@ async function reserveAction({ automationId, postId, igUserId, commentText, comm
   }
 }
 
-// ============================================================================
-// FIXED: finalizeAction with better error handling
-// ============================================================================
 async function finalizeAction({ automationId, postId, igUserId, commentText, commentId, channel, ok, error }) {
   const textHash = crypto.createHash('md5').update(commentText || '').digest('hex');
   
@@ -387,6 +384,33 @@ async function cleanupStaleLocks() {
     }
   } catch (err) {
     console.error("❌ cleanupStaleLocks error:", err.message);
+  }
+}
+
+async function isEventProcessed(eventId) {
+  if (!eventId) return false;
+  
+  try {
+    const existing = await ProcessedEvent.findOne({ eventId });
+    return !!existing;
+  } catch (err) {
+    console.error("❌ Error checking processed event:", err.message);
+    return false; // Fail open to avoid blocking legitimate events
+  }
+}
+
+async function markEventProcessed(eventId) {
+  if (!eventId) return;
+  
+  try {
+    await ProcessedEvent.create({ eventId });
+    console.log("✅ Event marked as processed:", eventId);
+  } catch (err) {
+    if (err.code === 11000) {
+      console.log("ℹ️ Event already marked as processed:", eventId);
+    } else {
+      console.error("❌ Error marking event:", err.message);
+    }
   }
 }
 
@@ -658,7 +682,7 @@ app.post("/pubsub", async (req, res) => {
 
     const userTokenCache = new Map();
 
- for (const c of commentEvents) {
+for (const c of commentEvents) {
   const automations = await Automation.find({
     platform: "instagram",
     status: "active",
