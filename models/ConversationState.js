@@ -50,6 +50,12 @@ const ConversationStateSchema = new Schema(
       required: true,
     },
     
+    // ADDED: Store nested quick reply state
+    currentNestedQuickReplyConfig: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
+    
     // Conversation history (breadcrumb trail)
     conversationHistory: {
       type: [ConversationHistorySchema],

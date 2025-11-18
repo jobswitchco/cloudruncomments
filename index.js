@@ -1437,6 +1437,8 @@ async function executeAction({
       // FIX: Get replyOptions from action level first, then fallback to config level
       const nestedOptions = action.replyOptions || nestedConfig.replyOptions || [];
       
+      console.log("📋 Nested options found:", nestedOptions.length);
+      
       if (nestedOptions.length === 0) {
         console.warn("⚠️ No nested quick reply options found");
         return { success: false, error: "No options" };
@@ -1447,6 +1449,8 @@ async function executeAction({
         title: (option.text || "Option").toString().slice(0, 20),
         payload: `QR_NESTED_${parentNodeId}_${option.id}`,
       }));
+
+      console.log("📤 Sending nested quick replies to user");
 
       await sendFlowMessage({
         recipient: { id: senderId },
@@ -1463,7 +1467,7 @@ async function executeAction({
 
       // Store nested config for next interaction
       // FIX: Include the replyOptions in the stored config
-      conversation.currentNestedQuickReplyConfig = {
+      const configToStore = {
         parentNodeId: String(parentNodeId),
         parentOptionId: String(selectedOption.id),
         nestedConfig: {
@@ -1472,7 +1476,23 @@ async function executeAction({
         },
       };
 
+      conversation.currentNestedQuickReplyConfig = configToStore;
+      
+      // Add to history
+      conversation.addHistory({
+        flowId: String(parentNodeId),
+        flowName: "NESTED_QUICK_REPLY_SENT",
+        messageSent: nestedConfig.quickReplyQuestion,
+        timestamp: new Date(),
+      });
+
+      // CRITICAL: Save the conversation with nested config
       await conversation.save();
+      
+      console.log("💾 Nested config saved:", {
+        parentNodeId: configToStore.parentNodeId,
+        optionsCount: nestedOptions.length
+      });
 
       return { success: true, isNested: true };
     }
@@ -1532,26 +1552,38 @@ async function handlePostback(event) {
   // ============================================================================
   // HANDLE NESTED QUICK REPLY SELECTIONS
   // ============================================================================
-  if (payload.startsWith("QR_NESTED_")) {
-    console.log("→ Processing nested quick reply selection");
+ if (payload.startsWith("QR_NESTED_")) {
+  console.log("→ Processing nested quick reply selection");
 
-    const conversation = await ConversationState.findOne({
-      igUserId: senderId,
-      status: "active",
-      expiresAt: { $gt: new Date() },
-    }).sort({ startedAt: -1 });
+  const conversation = await ConversationState.findOne({
+    igUserId: senderId,
+    status: "active",
+    expiresAt: { $gt: new Date() },
+  }).sort({ startedAt: -1 });
 
-    if (!conversation) {
-      console.warn("⚠️ No conversation found");
-      return;
-    }
+  if (!conversation) {
+    console.warn("⚠️ No conversation found");
+    return;
+  }
 
-    const nestedConfig = conversation.currentNestedQuickReplyConfig;
+  // DEBUG: Log what we found
+  console.log("🔍 Conversation found:", {
+    id: conversation._id,
+    hasNestedConfig: !!conversation.currentNestedQuickReplyConfig,
+    currentFlowId: conversation.currentFlowId
+  });
 
-    if (!nestedConfig) {
-      console.warn("⚠️ No nested config found");
-      return;
-    }
+  const nestedConfig = conversation.currentNestedQuickReplyConfig;
+
+  if (!nestedConfig) {
+    console.warn("⚠️ No nested config found in conversation");
+    console.log("📋 Full conversation state:", JSON.stringify({
+      currentFlowId: conversation.currentFlowId,
+      currentNestedQuickReplyConfig: conversation.currentNestedQuickReplyConfig,
+      historyLength: conversation.history?.length || 0
+    }, null, 2));
+    return;
+  }
 
     const { nestedConfig: config, parentNodeId } = nestedConfig;
 
