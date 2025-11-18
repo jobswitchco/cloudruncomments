@@ -1819,6 +1819,80 @@ async function handlePostback(event) {
   // ============================================================================
   // HANDLE FOLLOWCHECK RECHECK
   // ============================================================================
+  // if (payload.startsWith("FOLLOWCHECK_RECHECK_")) {
+  //   const nodeId = payload.replace("FOLLOWCHECK_RECHECK_", "");
+
+  //   const conversation = await ConversationState.findOne({
+  //     igUserId: senderId,
+  //     status: "active",
+  //     expiresAt: { $gt: new Date() },
+  //   }).sort({ startedAt: -1 });
+
+  //   if (!conversation) {
+  //     console.log("ℹ️ No conversation found");
+  //     return;
+  //   }
+
+  //   const flowConfig = conversation.flowConfig || [];
+  //   const followCheckNode = flowConfig.find((node) => String(node.id) === String(nodeId));
+
+  //   if (!followCheckNode) {
+  //     console.error("❌ FollowCheck node not found");
+  //     return;
+  //   }
+
+  //   const creds = await ensureFreshPageTokenForUser(conversation.userId);
+  //   const accessToken = creds.fbPageAccessToken;
+  //   const fbPageId = creds.fbPageId;
+
+  //   if (!accessToken || !fbPageId) {
+  //     console.error("❌ Missing credentials");
+  //     return;
+  //   }
+
+  //   try {
+  //     const result = await executeFollowCheckNode({
+  //       flowNode: followCheckNode,
+  //       conversation,
+  //       senderId,
+  //       pageAccessToken: accessToken,
+  //       fbPageId,
+  //     });
+
+  //     if (result.completed) {
+  //       // User is now following - move to next node
+  //       const nextNode = getNextFlowNode(flowConfig, nodeId);
+
+  //       if (nextNode) {
+  //         console.log(`→ Moving to next node after followCheck: ${nextNode.id}`);
+
+  //         await executeFlowNode({
+  //           flowNode: nextNode,
+  //           conversation,
+  //           senderId,
+  //           pageAccessToken: accessToken,
+  //           fbPageId,
+  //         });
+  //       } else {
+  //         console.log("🏁 Flow completed");
+  //         conversation.markCompleted();
+  //         await conversation.save();
+  //         await Automation.updateOne(
+  //           { _id: conversation.automationId },
+  //           { $inc: { "runStats.flowConversationsCompleted": 1 } }
+  //         );
+  //       }
+  //     }
+  //   } catch (err) {
+  //     console.error("❌ FollowCheck recheck failed:", err.message);
+  //     conversation.markError(err);
+  //     await conversation.save();
+  //   }
+
+  //   return;
+  // }
+
+
   if (payload.startsWith("FOLLOWCHECK_RECHECK_")) {
     const nodeId = payload.replace("FOLLOWCHECK_RECHECK_", "");
 
@@ -1860,29 +1934,12 @@ async function handlePostback(event) {
       });
 
       if (result.completed) {
-        // User is now following - move to next node
-        const nextNode = getNextFlowNode(flowConfig, nodeId);
-
-        if (nextNode) {
-          console.log(`→ Moving to next node after followCheck: ${nextNode.id}`);
-
-          await executeFlowNode({
-            flowNode: nextNode,
-            conversation,
-            senderId,
-            pageAccessToken: accessToken,
-            fbPageId,
-          });
-        } else {
-          console.log("🏁 Flow completed");
-          conversation.markCompleted();
-          await conversation.save();
-          await Automation.updateOne(
-            { _id: conversation.automationId },
-            { $inc: { "runStats.flowConversationsCompleted": 1 } }
-          );
-        }
+        console.log("✅ Follow check passed on retry. Waiting for user to click the success button.");
+        // STOP HERE: The "Open Directions" button has been sent by executeFollowCheckNode.
+        // We do NOT automatically move to nextNode. We wait for the FLOW_BTN_ payload.
+        return;
       }
+      
     } catch (err) {
       console.error("❌ FollowCheck recheck failed:", err.message);
       conversation.markError(err);
@@ -1892,6 +1949,7 @@ async function handlePostback(event) {
     return;
   }
 
+  
   // ============================================================================
   // HANDLE FLOW BUTTON CLICKS (e.g., "Open Directions" inside FollowCheck)
   // ============================================================================
