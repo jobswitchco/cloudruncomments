@@ -1186,7 +1186,7 @@ async function executeQuickReplyNode({
   console.log('senderId : ', senderId);
   console.log('pageAccessToken : ', pageAccessToken);
   console.log('fbPageId : ', fbPageId);
-  
+
   const quickReplies = (flowNode.replyOptions || [])
     .slice(0, 13)
     .map((option) => ({
@@ -1622,7 +1622,7 @@ async function handlePostback(event) {
           flowNode: nextNode,
           conversation,
           senderId,
-          accessToken,
+          pageAccessToken: accessToken,
           fbPageId,
         });
 
@@ -1688,7 +1688,7 @@ async function handlePostback(event) {
         flowNode: firstNode,
         conversation,
         senderId,
-        accessToken,
+        pageAccessToken: accessToken,
         fbPageId,
       });
 
@@ -1756,7 +1756,9 @@ async function handlePostback(event) {
             flowNode: nextNode,
             conversation,
             senderId,
-            accessToken,
+       
+        pageAccessToken: accessToken,
+
             fbPageId,
           });
         } else {
@@ -1875,7 +1877,8 @@ async function handlePostback(event) {
           flowNode: nextNode,
           conversation,
           senderId,
-          accessToken,
+          pageAccessToken: accessToken,
+
           fbPageId,
         });
 
