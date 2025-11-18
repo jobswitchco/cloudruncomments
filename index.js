@@ -1211,6 +1211,26 @@ async function executeQuickReplyNode({
     throw new Error(`Quick replies failed: ${JSON.stringify(qrData)}`);
   }
 
+  try {
+  const response = await http.post(url, qrBody, {
+    params: { access_token: pageAccessToken },
+  });
+  if (response.status >= 400) {
+    console.error("Facebook API error data:", response.data);
+    throw new Error(`Quick replies failed: ${JSON.stringify(response.data)}`);
+  }
+  return response.data;
+} catch (err) {
+  if (err.response) {
+    console.error("FB API response error status:", err.response.status);
+    console.error("FB API response error data:", err.response.data);
+  } else {
+    console.error("Error in HTTP request:", err.message);
+  }
+  throw err;
+}
+
+
   console.log("✅ Quick replies sent");
 
   // Update conversation
