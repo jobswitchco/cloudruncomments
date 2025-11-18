@@ -3,7 +3,7 @@ import express from "express";
 import mongoose from "mongoose";
 import axios from "axios";
 import qs from "qs";
-
+import crypto from "crypto";
 import Automation from "./models/Automation.js";
 import RepliedComment from "./models/RepliedComment.js";
 import User from "./models/User.js";
@@ -298,13 +298,15 @@ async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken,
   }
 }
 
-// ---------- Action Locking ----------
-async function reserveAction({ automationId, commentId, channel }) {
+
+async function reserveAction({ automationId, postId, igUserId, commentText, commentId, channel }) {
   const now = new Date();
+  const textHash = crypto.createHash('md5').update(commentText || '').digest('hex');
+  
   try {
     const res = await ActionLock.findOneAndUpdate(
-      { automationId, commentId, channel, state: { $ne: "sent" } },
-      { $setOnInsert: { automationId, commentId, channel, state: "reserved", reservedAt: now } },
+      { automationId, postId, igUserId, textHash, channel, state: { $ne: "sent" } },
+      { $setOnInsert: { automationId, postId, igUserId, textHash, channel, commentId, state: "reserved", reservedAt: now } },
       { upsert: true, new: true }
     );
     const proceed = res.state === "reserved";
@@ -315,14 +317,22 @@ async function reserveAction({ automationId, commentId, channel }) {
   }
 }
 
-
-async function finalizeAction({ automationId, commentId, channel, ok, error }) {
-  const update = ok
-    ? { state: "sent", sentAt: new Date(), error: undefined }
-    : { state: "failed", error };
-
-  await ActionLock.updateOne({ automationId, commentId, channel }, { $set: update });
+async function finalizeAction({ automationId, postId, igUserId, commentText, commentId, channel, ok, error }) {
+  const textHash = crypto.createHash('md5').update(commentText || '').digest('hex');
+  try {
+    await ActionLock.updateOne(
+      { automationId, postId, igUserId, textHash, channel, commentId },
+      { 
+        state: ok ? "sent" : "failed", 
+        sentAt: ok ? new Date() : null, 
+        error: error || null 
+      }
+    );
+  } catch (err) {
+    console.error("finalizeAction error", err);
+  }
 }
+
 
 // ---------- CRITICAL: sendFlowMessage - handles BOTH comment_id (private reply) and user id (DM) ----------
 async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId }) {
@@ -629,6 +639,9 @@ app.post("/pubsub", async (req, res) => {
         if (auto.hasReply && auto.replyComment) {
           const { proceed } = await reserveAction({
             automationId: auto._id,
+            postId: c.mediaId,
+            igUserId: c.fromUserId,
+            commentText: c.text,
             commentId: c.commentId,
             channel: "public",
           });
@@ -640,6 +653,9 @@ app.post("/pubsub", async (req, res) => {
 
               await finalizeAction({
                 automationId: auto._id,
+                postId: c.mediaId,
+                igUserId: c.fromUserId,
+                commentText: c.text,
                 commentId: c.commentId,
                 channel: "public",
                 ok: true,

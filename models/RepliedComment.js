@@ -34,6 +34,11 @@ const RepliedCommentSchema = new Schema(
 
 // Updated index - removed 'channel' as it's not in schema
 RepliedCommentSchema.index({ automationId: 1, commentId: 1 });
+RepliedCommentSchema.index(
+  { postId: 1, igUserId: 1, text: 1 },
+  { unique: true, partialFilterExpression: { status: { $ne: "failed" } } }
+);
+
 
 const RepliedComment =
   mongoose.models.RepliedComment ||
