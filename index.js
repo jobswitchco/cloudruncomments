@@ -1244,6 +1244,9 @@ async function executeQuickReplyNode({
 /**
  * Execute a followCheck node
  */
+/**
+ * Execute a followCheck node
+ */
 async function executeFollowCheckNode({
   flowNode,
   conversation,
@@ -1274,16 +1277,45 @@ async function executeFollowCheckNode({
   console.log("🔍 Follow Status:", { userId: senderId, isFollowing });
 
   if (isFollowing) {
-    // User is following - send success message first
-    await sendFlowMessage({
-      recipient: { id: senderId },
-      flowNode: {
-        type: "text",
-        message: flowNode.config.followCheckYesMessage,
-      },
-      pageAccessToken,
-      fbPageId,
-    });
+    // User is following
+    console.log("✅ User is following. Sending Success Message + Button.");
+    
+    const followingButtons = flowNode.followingButtons || [];
+
+    // 1. If buttons exist, we send a BUTTON TEMPLATE (Button Message)
+    if (followingButtons.length > 0) {
+      
+      // Create buttons for the payload
+      const buttonPayloads = followingButtons.map(btn => ({
+        type: "postback",
+        title: btn.text,
+        // NEW PAYLOAD FORMAT: To identify this specific button click later
+        payload: `FLOW_BTN_${flowNode.id}_${btn.id}` 
+      }));
+
+      await sendFlowMessage({
+        recipient: { id: senderId },
+        flowNode: {
+          type: "button", // Force type to button
+          message: flowNode.config.followCheckYesMessage,
+          buttons: buttonPayloads // Pass the constructed buttons
+        },
+        pageAccessToken,
+        fbPageId,
+      });
+
+    } else {
+      // 2. Fallback: If no buttons defined, just send text
+      await sendFlowMessage({
+        recipient: { id: senderId },
+        flowNode: {
+          type: "text",
+          message: flowNode.config.followCheckYesMessage,
+        },
+        pageAccessToken,
+        fbPageId,
+      });
+    }
 
     conversation.addHistory({
       flowId: String(flowNode.id),
@@ -1295,33 +1327,13 @@ async function executeFollowCheckNode({
     conversation.currentFlowId = String(flowNode.id);
     await conversation.save();
 
-    // Now execute the button action directly (just like nested quick reply actions)
-    const followingButtons = flowNode.followingButtons || [];
-    if (followingButtons.length > 0 && followingButtons[0].actions && followingButtons[0].actions.length > 0) {
-      const action = followingButtons[0].actions[0];
-      
-      console.log("→ Executing followCheck button action:", action.type);
-
-      try {
-        await executeAction({
-          action,
-          selectedOption: { text: followingButtons[0].text, id: followingButtons[0].id },
-          conversation,
-          senderId,
-          pageAccessToken,
-          fbPageId,
-          parentNodeId: flowNode.id,
-        });
-        
-        console.log("✅ FollowCheck action executed");
-      } catch (err) {
-        console.error("❌ Failed to execute followCheck action:", err.message);
-      }
-    }
+    // REMOVED: The code that auto-executed "executeAction" here. 
+    // We now wait for the user to click the button we just sent.
 
     return { success: true, completed: true };
+
   } else {
-    // User not following - send verification button
+    // User not following - send verification button (Existing logic)
     const notFollowingButtons = flowNode.notFollowingButtons || [];
     const verificationButton = notFollowingButtons[0];
 
@@ -1864,6 +1876,83 @@ async function handlePostback(event) {
       await conversation.save();
     }
 
+    return;
+  }
+
+  // ============================================================================
+  // HANDLE FLOW BUTTON CLICKS (e.g., "Open Directions" inside FollowCheck)
+  // ============================================================================
+  if (payload.startsWith("FLOW_BTN_")) {
+    console.log("→ Processing Flow Button Click");
+
+    // Parse the payload: FLOW_BTN_{nodeId}_{buttonId}
+    const parts = payload.replace("FLOW_BTN_", "").split("_");
+    const nodeId = parts[0];
+    const buttonId = parts[1];
+
+    const conversation = await ConversationState.findOne({
+      igUserId: senderId,
+      status: "active",
+      expiresAt: { $gt: new Date() },
+    }).sort({ startedAt: -1 });
+
+    if (!conversation) return;
+
+    const flowConfig = conversation.flowConfig || [];
+    const currentNode = flowConfig.find((node) => String(node.id) === String(nodeId));
+
+    if (!currentNode) {
+      console.error("❌ Node not found for button click");
+      return;
+    }
+
+    // Search for the button in followingButtons (since that's where we set this up)
+    // You might want to check other button arrays if you reuse this logic elsewhere
+    const clickedButton = (currentNode.followingButtons || []).find(
+      (btn) => String(btn.id) === String(buttonId)
+    );
+
+    if (!clickedButton) {
+      console.error("❌ Button configuration not found");
+      return;
+    }
+
+    const creds = await ensureFreshPageTokenForUser(conversation.userId);
+    const accessToken = creds.fbPageAccessToken;
+    const fbPageId = creds.fbPageId;
+
+    // Execute the action attached to this button
+    if (clickedButton.actions && clickedButton.actions.length > 0) {
+      const action = clickedButton.actions[0];
+      console.log(`→ Executing action for button: ${clickedButton.text}`);
+
+      try {
+        const actionResult = await executeAction({
+          action,
+          selectedOption: { text: clickedButton.text, id: clickedButton.id },
+          conversation,
+          senderId,
+          pageAccessToken: accessToken,
+          fbPageId,
+          parentNodeId: currentNode.id,
+        });
+
+        // If the action was a Nested Quick Reply, we are done here (waiting for user input)
+        if (actionResult.isNested) {
+           return;
+        }
+
+        // If the action completed (e.g., it was just a link), we might want to move Next
+        // usually buttons in this flow style might end here or link out, 
+        // but if you want to support flow continuation after a simple button:
+        if (actionResult.completed) {
+           // Logic to move to next node if applicable
+        }
+
+      } catch (err) {
+        console.error("❌ Failed to execute button action:", err.message);
+      }
+    }
     return;
   }
 
