@@ -1292,7 +1292,30 @@ async function executeFollowCheckNode({
   if (isFollowing) {
     // User is following
     console.log("✅ User is following. Sending Success Message + Button.");
-    
+    const igUserIdToUpdate = userDetails.id || senderId;
+
+    if (igUserIdToUpdate) {
+        try {
+            const updateFields = {
+                followsBusiness: userDetails.is_user_follow_business,
+                businessFollowsUser: userDetails.is_business_follow_user,
+                username: userDetails.username,
+                profilePic: userDetails.profile_pic,
+            };
+            
+            // Use updateMany to ensure ALL records associated with this igUserId are updated
+            const updateResult = await RepliedComment.updateMany(
+                { igUserId: igUserIdToUpdate }, 
+                { $set: updateFields }
+            );
+
+            console.log(`✅ Database Update: Updated ${updateResult.nModified} RepliedComment records for igUserId ${igUserIdToUpdate}.`);
+        } catch (dbErr) {
+            console.error("❌ Failed to update RepliedComment records:", dbErr.message);
+        }
+    }
+
+
     const followingButtons = flowNode.followingButtons || [];
 
     // 1. If buttons exist, we send a BUTTON TEMPLATE (Button Message)
@@ -1819,78 +1842,7 @@ async function handlePostback(event) {
   // ============================================================================
   // HANDLE FOLLOWCHECK RECHECK
   // ============================================================================
-  // if (payload.startsWith("FOLLOWCHECK_RECHECK_")) {
-  //   const nodeId = payload.replace("FOLLOWCHECK_RECHECK_", "");
 
-  //   const conversation = await ConversationState.findOne({
-  //     igUserId: senderId,
-  //     status: "active",
-  //     expiresAt: { $gt: new Date() },
-  //   }).sort({ startedAt: -1 });
-
-  //   if (!conversation) {
-  //     console.log("ℹ️ No conversation found");
-  //     return;
-  //   }
-
-  //   const flowConfig = conversation.flowConfig || [];
-  //   const followCheckNode = flowConfig.find((node) => String(node.id) === String(nodeId));
-
-  //   if (!followCheckNode) {
-  //     console.error("❌ FollowCheck node not found");
-  //     return;
-  //   }
-
-  //   const creds = await ensureFreshPageTokenForUser(conversation.userId);
-  //   const accessToken = creds.fbPageAccessToken;
-  //   const fbPageId = creds.fbPageId;
-
-  //   if (!accessToken || !fbPageId) {
-  //     console.error("❌ Missing credentials");
-  //     return;
-  //   }
-
-  //   try {
-  //     const result = await executeFollowCheckNode({
-  //       flowNode: followCheckNode,
-  //       conversation,
-  //       senderId,
-  //       pageAccessToken: accessToken,
-  //       fbPageId,
-  //     });
-
-  //     if (result.completed) {
-  //       // User is now following - move to next node
-  //       const nextNode = getNextFlowNode(flowConfig, nodeId);
-
-  //       if (nextNode) {
-  //         console.log(`→ Moving to next node after followCheck: ${nextNode.id}`);
-
-  //         await executeFlowNode({
-  //           flowNode: nextNode,
-  //           conversation,
-  //           senderId,
-  //           pageAccessToken: accessToken,
-  //           fbPageId,
-  //         });
-  //       } else {
-  //         console.log("🏁 Flow completed");
-  //         conversation.markCompleted();
-  //         await conversation.save();
-  //         await Automation.updateOne(
-  //           { _id: conversation.automationId },
-  //           { $inc: { "runStats.flowConversationsCompleted": 1 } }
-  //         );
-  //       }
-  //     }
-  //   } catch (err) {
-  //     console.error("❌ FollowCheck recheck failed:", err.message);
-  //     conversation.markError(err);
-  //     await conversation.save();
-  //   }
-
-  //   return;
-  // }
 
 
   if (payload.startsWith("FOLLOWCHECK_RECHECK_")) {
