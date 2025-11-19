@@ -812,6 +812,7 @@ for (const c of commentEvents) {
             commentId: c.commentId,
             postId: c.mediaId,
             automationId: auto._id,
+            userId: auto.userId,
             channel: "private",
             state: "sent",
             text: c.text,

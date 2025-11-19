@@ -6,6 +6,7 @@ const RepliedCommentSchema = new Schema(
     commentId: { type: String, required: true },
     automationId: { type: Schema.Types.ObjectId, ref: "automations", required: true },
     postId: { type: String, required: true }, // linked Instagram post ID
+    userId: { type: Schema.Types.ObjectId, ref: "users", required: true },
 
     // Track which node in flow this comment reply is on
     currentNodeId: { type: String },
