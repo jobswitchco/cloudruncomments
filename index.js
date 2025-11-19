@@ -1452,6 +1452,42 @@ async function executeAction({
       return { success: true, completed: true };
     }
 
+    case "downloadFile": {
+      
+      // Use the redirectUrl from either action type's config
+      const redirectUrl = action.config?.redirectUrl || action.config?.downloadFile?.url || "https://example.com";
+      const messageText = action.config?.message || "Click below to open:";
+      const buttonLabel = action.config?.buttonText || "Open Link";
+      
+      // If no valid URL is found, log a warning and exit
+      if (!redirectUrl || !redirectUrl.startsWith('http')) {
+          console.warn(`⚠️ No valid redirect URL found for action type: ${action.type}`);
+          return { success: false, error: `Missing URL for ${action.type}` };
+      }
+      
+      console.log(`→ Sending ${action.type} link:`, redirectUrl);
+
+      await sendFlowMessage({
+        recipient: { id: senderId },
+        flowNode: {
+          type: "button",
+          message: messageText, 
+          buttons: [
+            {
+              type: "web_url",
+              title: buttonLabel,
+              url: redirectUrl,
+            },
+          ],
+        },
+        pageAccessToken,
+        fbPageId,
+      });
+
+      console.log(`✅ ${action.type} link sent`);
+      return { success: true, completed: true };
+    }
+
     case "quickReply": {
       // ✅ NESTED QUICK REPLY
       console.log("→ Executing nested quickReply");
