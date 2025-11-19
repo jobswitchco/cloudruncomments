@@ -1456,8 +1456,8 @@ async function executeAction({
       
       // Use the redirectUrl from either action type's config
       const redirectUrl = action.config?.redirectUrl || action.config?.downloadFile?.url || "https://example.com";
-      const messageText = action.config?.message || "Click below to open:";
-      const buttonLabel = action.config?.buttonText || "Open Link";
+      const messageText = action.config?.message || "Click below to download:";
+      const buttonLabel = action.config?.buttonText || "Download Now";
       
       // If no valid URL is found, log a warning and exit
       if (!redirectUrl || !redirectUrl.startsWith('http')) {
