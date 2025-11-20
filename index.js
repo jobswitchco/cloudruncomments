@@ -606,12 +606,65 @@ async function handleQuickReply(event) {
   await handlePostback(event);
 }
 
-async function handleTextMessage(event) {
-  const senderId = event.sender?.id;
-  const text = event.message?.text;
-  console.log("💬 Text message:", { senderId, text });
+// async function handleTextMessage(event) {
+//   const senderId = event.sender?.id;
+//   const text = event.message?.text;
+//   console.log("💬 Text message:", { senderId, text });
   
-  // Check if user is responding to initial private reply
+//   // Check if user is responding to initial private reply
+//   const conversation = await ConversationState.findOne({
+//     igUserId: senderId,
+//     status: "active",
+//     currentFlowId: "awaiting_user_response",
+//     expiresAt: { $gt: new Date() },
+//   }).sort({ startedAt: -1 });
+  
+//   if (conversation) {
+//     console.log("✅ User responded to initial message, 24hr window now open");
+    
+//     const creds = await ensureFreshPageTokenForUser(conversation.userId);
+//     const accessToken = creds.fbPageAccessToken;
+//     const fbPageId = creds.fbPageId;
+    
+//     const initialNode = conversation.flowConfig.initial;
+    
+//     try {
+//       // Now we can send quick replies using user ID
+//       await sendFlowMessage({
+//         recipient: { id: String(senderId) },
+//         flowNode: initialNode,
+//         pageAccessToken: accessToken,
+//         fbPageId: fbPageId,
+//       });
+      
+//       conversation.currentFlowId = "initial";
+//       conversation.addHistory({
+//         flowId: "initial",
+//         flowName: "INITIAL",
+//         messageSent: initialNode.message,
+//         userReply: text,
+//       });
+//       await conversation.save();
+      
+//       console.log("✅ Quick replies sent after user text response");
+//     } catch (err) {
+//       console.error("❌ Failed to send quick replies:", err.message);
+//       conversation.markError(err);
+//       await conversation.save();
+//     }
+//   }
+// }
+
+// ========== PUB/SUB ENDPOINT: COMMENTS ==========
+
+async function handleTextMessage(event) {
+  const senderId = event.sender?.id;    // The user who replied to the story
+  const recipientId = event.recipient?.id; // Your Instagram Business ID
+  const text = (event.message?.text || "").trim();
+  
+  console.log("💬 Text message received:", { senderId, recipientId, text });
+  
+  // 1. Check if user is responding to an EXISTING active conversation
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
@@ -620,16 +673,17 @@ async function handleTextMessage(event) {
   }).sort({ startedAt: -1 });
   
   if (conversation) {
-    console.log("✅ User responded to initial message, 24hr window now open");
+    console.log("✅ User responded to active flow, 24hr window open");
     
     const creds = await ensureFreshPageTokenForUser(conversation.userId);
     const accessToken = creds.fbPageAccessToken;
     const fbPageId = creds.fbPageId;
     
-    const initialNode = conversation.flowConfig.initial;
+    const initialNode = conversation.flowConfig.initial; // Or find next node logic
     
     try {
-      // Now we can send quick replies using user ID
+      // If the user typed text instead of clicking a button, we usually treat it as an input
+      // But for your Quick Reply logic:
       await sendFlowMessage({
         recipient: { id: String(senderId) },
         flowNode: initialNode,
@@ -646,16 +700,117 @@ async function handleTextMessage(event) {
       });
       await conversation.save();
       
-      console.log("✅ Quick replies sent after user text response");
+      console.log("✅ Flow continued after user text response");
+      return; // STOP HERE
     } catch (err) {
-      console.error("❌ Failed to send quick replies:", err.message);
+      console.error("❌ Failed to continue flow:", err.message);
       conversation.markError(err);
       await conversation.save();
     }
+    return;
+  }
+
+  // ========================================================================
+  // 2. NEW LOGIC: Check if this text is a KEYWORD TRIGGER (Story Reply)
+  // ========================================================================
+  console.log("🔍 No active conversation. Checking for Keyword Triggers (Story Reply)...");
+
+  try {
+    // A. Find the SaaS User who owns this Instagram Business Account
+    const user = await User.findOne({ igUserId: recipientId }).lean();
+    
+    if (!user) {
+      console.log("⚠️ No SaaS user found for Instagram ID:", recipientId);
+      return;
+    }
+
+    // B. Normalize text for matching
+    const normalizedText = text.toLowerCase();
+
+    // C. Find active Automation matching this keyword
+    // Note: Story replies don't have a `postId` in the immediate text event easily matching your Automation.postId.
+    // We search for ANY active automation by this user that contains the keyword.
+    // If you have multiple automations with the same keyword, this picks the most recently created one.
+    const automation = await Automation.findOne({
+      userId: user._id,
+      platform: "instagram",
+      status: "active",
+      keywords: { $in: [normalizedText] } 
+    }).sort({ created_at: -1 }); // Prioritize newest
+
+    if (automation) {
+      console.log(`✅ Keyword Match Found! Automation ID: ${automation._id}`);
+
+      // D. Get Fresh Tokens
+      const creds = await ensureFreshPageTokenForUser(user._id);
+      if (!creds.fbPageAccessToken) {
+        console.error("❌ Missing Access Token for automation trigger");
+        return;
+      }
+
+      // E. Check Action Locks (Prevent double firing)
+      // We use senderId + text + timestamp-ish as a unique lock
+      const { proceed } = await reserveAction({
+        automationId: automation._id,
+        postId: "STORY_REPLY_OR_DM", // Placeholder since we don't have the exact story ID in a simple text event
+        igUserId: senderId,
+        commentText: text,
+        commentId: `DM_${Date.now()}_${senderId}`, // Generate a pseudo-ID for DMs
+        channel: "private",
+      });
+
+      if (proceed) {
+        try {
+            // F. Trigger the DM Flow directly
+            // Note: We pass `senderId` as `commentId` context effectively, 
+            // but sendInitialDM expects a `commentId` for button payload usually.
+            // We will use a pseudo ID.
+            
+            await sendInitialDM({
+                fbPageId: creds.fbPageId,
+                commentId: `DM_${Date.now()}`, // Pseudo ID required for the function signature
+                automation: automation,
+                pageAccessToken: creds.fbPageAccessToken,
+                igUserId: senderId,
+                igUsername: event.sender?.username || "Instagram User", // API often doesn't give username in webhook, implies fetch needed
+            });
+            
+            await finalizeAction({
+                automationId: automation._id,
+                postId: "STORY_REPLY_OR_DM",
+                igUserId: senderId,
+                commentText: text,
+                commentId: `DM_${Date.now()}_${senderId}`,
+                channel: "private",
+                ok: true,
+            });
+
+            console.log("🚀 Story Reply Automation Triggered Successfully");
+
+        } catch (err) {
+            console.error("❌ Story Reply Automation Failed:", err.message);
+            await finalizeAction({
+                automationId: automation._id,
+                postId: "STORY_REPLY_OR_DM",
+                igUserId: senderId,
+                commentText: text,
+                commentId: `DM_${Date.now()}_${senderId}`,
+                channel: "private",
+                ok: false,
+                error: { message: err.message }
+            });
+        }
+      } else {
+        console.log("ℹ️ Action locked (already processed)");
+      }
+    } else {
+      console.log("ℹ️ No matching automation found for keyword:", normalizedText);
+    }
+
+  } catch (err) {
+    console.error("❌ Error checking keyword triggers:", err.message);
   }
 }
-
-// ========== PUB/SUB ENDPOINT: COMMENTS ==========
 app.post("/pubsub", async (req, res) => {
   try {
     console.log("📨 /pubsub called (comments)");
@@ -868,16 +1023,91 @@ for (const c of commentEvents) {
 
 
 
+// async function sendInitialDM({
+//   fbPageId,
+//   commentId,
+//   automation,
+//   pageAccessToken,
+//   igUserId,
+//   igUsername,
+// }) {
+//   try {
+//     // ONLY send button DM, nothing else
+//     const buttonPayload = {
+//       type: "postback",
+//       title: automation.buttonText,
+//       payload: `FLOW_START_${automation._id}`,
+//     };
+
+//     const url = `${FB_API}/${fbPageId}/messages`;
+//     const buttonBody = {
+//       recipient: { comment_id: String(commentId) },
+//       message: {
+//         attachment: {
+//           type: "template",
+//           payload: {
+//             template_type: "button",
+//             text: automation.dmMessage,
+//             buttons: [buttonPayload],
+//           },
+//         },
+//       },
+//     };
+
+//     const { data: btnData, status: btnStatus } = await http.post(
+//       url,
+//       buttonBody,
+//       { params: { access_token: pageAccessToken } }
+//     );
+
+//     if (btnStatus >= 400) {
+//       throw new Error(`Button send failed: ${JSON.stringify(btnData)}`);
+//     }
+
+//     console.log("✅ Initial DM button sent");
+
+//     // Create ConversationState
+//     const firstNode = automation.flowNodes?.[0];
+    
+//     await ConversationState.create({
+//       userId: automation.userId,
+//       automationId: automation._id,
+//       commentId: commentId,
+//       igUserId: igUserId,
+//       igUsername: igUsername,
+//        currentFlowId: String(automation.flowNodes[0]?.id),
+//       flowConfig: automation.flowNodes,
+//       conversationHistory: [
+//         {
+//           flowId: String(firstNode?.id),
+//           flowName: "INITIAL",
+//           messageSent: automation.dmMessage,
+//           timestamp: new Date(),
+//         },
+//       ],
+//       status: "active",
+//       startedAt: new Date(),
+//       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+//     });
+
+//     console.log("✅ ConversationState created");
+
+//     return { ok: true };
+//   } catch (err) {
+//     console.error("❌ Error in sendInitialDM:", err.message);
+//     throw err;
+//   }
+// }
+
 async function sendInitialDM({
   fbPageId,
   commentId,
   automation,
   pageAccessToken,
-  igUserId,
+  igUserId, // Ensure this is passed
   igUsername,
 }) {
   try {
-    // ONLY send button DM, nothing else
     const buttonPayload = {
       type: "postback",
       title: automation.buttonText,
@@ -885,8 +1115,17 @@ async function sendInitialDM({
     };
 
     const url = `${FB_API}/${fbPageId}/messages`;
+    
+    // LOGIC CHANGE: Check if this is a DM trigger (Story Reply) or a Comment Private Reply
+    // If commentId starts with "DM_", treat it as a direct user message
+    const isDirectMessage = String(commentId).startsWith("DM_");
+    
+    const recipient = isDirectMessage 
+        ? { id: String(igUserId) } 
+        : { comment_id: String(commentId) };
+
     const buttonBody = {
-      recipient: { comment_id: String(commentId) },
+      recipient: recipient, // <--- Updated Logic
       message: {
         attachment: {
           type: "template",
@@ -911,7 +1150,7 @@ async function sendInitialDM({
 
     console.log("✅ Initial DM button sent");
 
-    // Create ConversationState
+    // Create ConversationState (Existing logic...)
     const firstNode = automation.flowNodes?.[0];
     
     await ConversationState.create({
@@ -920,7 +1159,7 @@ async function sendInitialDM({
       commentId: commentId,
       igUserId: igUserId,
       igUsername: igUsername,
-       currentFlowId: String(automation.flowNodes[0]?.id),
+       currentFlowId: String(automation.flowNodes[0]?.id),
       flowConfig: automation.flowNodes,
       conversationHistory: [
         {
