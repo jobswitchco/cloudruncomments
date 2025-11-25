@@ -427,7 +427,7 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
   }
 }
 
-// ========== NEW: startDirectFlow (For DM triggers) ==========
+// ========== NEW: startDirectFlow (For Auto DM triggers) ==========
 
 async function startDirectFlow({
   automation,
