@@ -55,6 +55,10 @@ function normalize(str = "") {
   return String(str).toLowerCase().trim();
 }
 
+function escapeRegex(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function extractCommentEvents(envelope) {
   const events = [];
   const entries = envelope?.body?.entry || [];
@@ -555,13 +559,60 @@ async function handleTextMessage(event, businessId) {
           return;
       }
 
-      // 1. Try Direct Lookup (This might fail if ID mismatch exists)
-      let user = await User.findOne({ igUserId: businessId }).lean();
+      // 1. Try Direct Lookup
+      // CHECK BOTH fbPageId AND igUserId because businessId could be either depending on the webhook source
+      let user = await User.findOne({ 
+        $or: [{ fbPageId: businessId }, { igUserId: businessId }] 
+      }).lean();
 
-      console.log('Business Id : ', businessId);
-      console.log('User : ', user);
-      console.log('Keywords : ', normalizedText);
+      // Create Case-Insensitive Regex for keyword matching
+      // "Lake", "lake", "LAKE" will all match "lake"
+      const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, 'i');
 
+      // 2. FALLBACK: Reverse Lookup via Automation
+      // If we couldn't find the user by ID, maybe we can find them via the unique Keyword
+      if (!user) {
+          console.log(`⚠️ Direct User lookup failed for ${businessId}. Trying Reverse Lookup via Automation keywords...`);
+          
+          // Find active automations with this keyword (Case Insensitive)
+          const potentialAutomations = await Automation.find({
+            platform: "instagram",
+            status: "active",
+            keywords: { $in: [keywordRegex] } // Use Regex here
+          }).limit(5).lean();
+
+          // Loop through potential automations to find the correct owner
+          for (const auto of potentialAutomations) {
+              const potentialUser = await User.findById(auto.userId).lean();
+              if (!potentialUser) continue;
+
+              // CHECK: Does this user's token work for the recipient businessId?
+              // This confirms if "potentialUser" actually owns the page receiving the DM.
+              if (potentialUser.fbPageAccessToken) {
+                  try {
+                      const verifyUrl = `${FB_API}/${businessId}`;
+                      await axios.get(verifyUrl, {
+                          params: { 
+                              fields: 'id',
+                              access_token: potentialUser.fbPageAccessToken 
+                          }
+                      });
+                      
+                      console.log(`✅ Reverse Lookup Verified: User ${potentialUser._id} owns ${businessId}`);
+                      user = potentialUser; // FOUND THE CORRECT USER
+                      break;
+                  } catch (verifyErr) {
+                       // Token invalid for this page -> Not the owner
+                       continue;
+                  }
+              }
+          }
+      }
+
+      if (!user) {
+        console.warn(`❌ No SaaS User found for Page ID: ${businessId} even after automation lookup.`);
+        return;
+      }
 
       // 3. Re-Check Automation (in case we found user via ID but need the specific automation now)
       // Note: If we found user via automation loop, we could pass the automation object directly, 
@@ -570,11 +621,8 @@ async function handleTextMessage(event, businessId) {
         userId: user._id,
         platform: "instagram",
         status: "active",
-        keywords: { $in: [normalizedText] } 
+        keywords: { $in: [keywordRegex] } // ✅ CASE INSENSITIVE CHECK
       }).lean();
-
-      console.log('automation : ', automation);
-
 
       if (!automation) {
         console.log(`ℹ️ No automation found for keyword: "${normalizedText}" (for verified user)`);
