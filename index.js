@@ -484,6 +484,10 @@ async function startDirectFlow({
   }
 }
 
+function escapeRegex(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // ========== UPDATED: handleTextMessage (Handles both Active Flows & New DM Keywords) ==========
 async function handleTextMessage(event, businessId) {
   const senderId = event.sender?.id;
