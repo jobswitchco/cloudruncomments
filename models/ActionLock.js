@@ -9,7 +9,7 @@ const ActionLockSchema = new Schema(
     commentId: { type: String, required: true },
     postId: { type: String, required: true },  // Add postId
   igUserId: { type: String, required: true },  // Add igUserId
-  textHash: { type: String, required: true }, // Optional: hash of comment text
+  textHash: { type: String }, // Optional: hash of comment text
     channel: { type: String, enum: ["public", "private"], required: true },
     state: { type: String, enum: ["reserved", "sent", "failed"], default: "reserved" },
     reservedAt: { type: Date, default: Date.now },
