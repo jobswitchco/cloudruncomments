@@ -58,11 +58,13 @@ function normalize(str = "") {
 async function extractCommentEvents(envelope) {
   const events = [];
   const entries = envelope?.body?.entry || [];
-  console.log('Entries :::', entries);
   
   for (const entry of entries) {
     const entryTime = entry?.time || null;
     const changes = entry?.changes || [];
+
+  console.log('changes :::', changes);
+
 
     for (const ch of changes) {
       const v = ch?.value || {};
@@ -78,6 +80,8 @@ async function extractCommentEvents(envelope) {
       });
     }
   }
+
+  console.log('Events : ', events);
   return events;
 }
 
