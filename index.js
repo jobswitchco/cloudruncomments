@@ -55,6 +55,10 @@ function normalize(str = "") {
   return String(str).toLowerCase().trim();
 }
 
+function escapeRegex(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function extractCommentEvents(envelope) {
   const events = [];
   const entries = envelope?.body?.entry || [];
@@ -484,9 +488,7 @@ async function startDirectFlow({
   }
 }
 
-function escapeRegex(string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+
 
 // ========== UPDATED: handleTextMessage (Handles both Active Flows & New DM Keywords) ==========
 async function handleTextMessage(event, businessId) {
@@ -563,7 +565,7 @@ async function handleTextMessage(event, businessId) {
       let user = await User.findOne({ igUserId: businessId }).lean();
 
       console.log('Business Id : ', businessId);
-      console.log('User : ', user);
+      // console.log('User : ', user);
       console.log('Keywords : ', normalizedText);
       const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, 'i');
       console.log('keywordRegex : ', keywordRegex);
