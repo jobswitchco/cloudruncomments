@@ -451,6 +451,7 @@ async function startDirectFlow({
       userId: automation.userId,
       automationId: automation._id,
       commentId: null, 
+      messageId,
       igUserId: igUserId,
       igUsername: null, // Can be updated later via Graph API if needed
       currentFlowId: String(firstNode.id),

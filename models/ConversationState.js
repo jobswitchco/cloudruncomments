@@ -32,7 +32,8 @@ const ConversationStateSchema = new Schema(
     },
     
     // Instagram identifiers
-    commentId: { type: String, required: true, index: true },
+    commentId: { type: String, index: true },
+    messageId: { type: String },
     igUserId: { type: String, required: true, index: true }, // Instagram Scoped User ID
     igUsername: { type: String }, // Username for reference
     
