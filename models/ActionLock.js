@@ -7,7 +7,8 @@ const ActionLockSchema = new Schema(
   {
     automationId: { type: Schema.Types.ObjectId, ref: "automations", required: true },
     commentId: { type: String, required: true },
-    postId: { type: String, required: true },  // Add postId
+    postId: { type: String },  // Add postId
+    postType: { type: String },  // Add postId
   igUserId: { type: String, required: true },  // Add igUserId
   textHash: { type: String }, // Optional: hash of comment text
     channel: { type: String, enum: ["public", "private"], required: true },

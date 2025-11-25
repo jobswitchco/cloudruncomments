@@ -491,7 +491,6 @@ async function startDirectFlow({
 
 
 
-// ========== UPDATED: handleTextMessage (Handles both Active Flows & New DM Keywords) ==========
 async function handleTextMessage(event, businessId) {
   const senderId = event.sender?.id;
   const text = event.message?.text;
@@ -565,12 +564,7 @@ async function handleTextMessage(event, businessId) {
       // 1. Try Direct Lookup (This might fail if ID mismatch exists)
       let user = await User.findOne({ igUserId: businessId }).lean();
 
-      console.log('Business Id : ', businessId);
-      // console.log('User : ', user);
-      console.log('Keywords : ', normalizedText);
       const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, 'i');
-      console.log('keywordRegex : ', keywordRegex);
-
 
 
       // 3. Re-Check Automation (in case we found user via ID but need the specific automation now)
@@ -578,12 +572,11 @@ async function handleTextMessage(event, businessId) {
       // but querying again is safer/cleaner code flow.
       const automation = await Automation.findOne({
         userId: user._id,
+        postType: 'autodm',
         platform: "instagram",
         status: "active",
         keywords: { $in: [keywordRegex] } 
       }).lean();
-
-      console.log('automation : ', normalizedText);
 
 
       if (!automation) {
@@ -597,7 +590,7 @@ async function handleTextMessage(event, businessId) {
       try {
          await ActionLock.create({
            automationId: automation._id,
-           postId: automation.postId,
+           postType,
            igUserId: senderId,
            commentId: messageId, // Use Message ID as unique key
            channel: "private",
@@ -924,6 +917,7 @@ async function sendInitialDM({
 
 // ========== UPDATED: PUB/SUB ENDPOINT: MESSAGING ==========
 app.post("/pubsub-messaging", async (req, res) => {
+  
   try {
     console.log("📨 /pubsub-messaging called");
 
@@ -969,12 +963,16 @@ app.post("/pubsub-messaging", async (req, res) => {
       for (const event of messaging) {
         // Handle postback events
         if (event.postback) {
+          console.log('Hit Here-1');
+
           await handlePostback(event);
           continue;
         }
 
         // Handle quick_reply events (same as postback)
         if (event.message?.quick_reply) {
+          console.log('Hit Here-2');
+
           await handlePostback(event);
           continue;
         }
@@ -982,6 +980,8 @@ app.post("/pubsub-messaging", async (req, res) => {
         // Handle regular text messages
         // ✅ PASS businessId to handleTextMessage
         if (event.message && !event.message.quick_reply) {
+          console.log('Hit Here-3');
+          console.log('businessId :', businessId);
           await handleTextMessage(event, businessId);
           continue;
         }

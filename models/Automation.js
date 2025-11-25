@@ -5,7 +5,8 @@ const AutomationSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "users", required: true },
     platform: { type: String, enum: ["instagram"], default: "instagram" },
-    postId: { type: String, required: true },
+    postId: { type: String },
+    postType: { type: String},
     repliedCount: { type: Number, default: 0 },
     thumbnail: { type: String },
     postLive: { type: Boolean, default: true },
