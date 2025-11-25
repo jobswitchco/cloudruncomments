@@ -428,6 +428,8 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
 }
 
 // ========== NEW: startDirectFlow (For DM triggers) ==========
+import axios from "axios"; // Ensure this is imported
+
 async function startDirectFlow({
   automation,
   igUserId,
@@ -438,6 +440,36 @@ async function startDirectFlow({
   try {
     console.log(`🚀 Starting Direct Flow for automation: ${automation._id}`);
 
+    // ====================================================
+    // STEP 1: Send the Initial DM (Welcome Message) First
+    // ====================================================
+    if (automation.dmMessage) {
+      try {
+        console.log("📨 Sending Initial DM Message...");
+        
+        // We use a direct Axios call here to ensure it goes out before the flow logic
+        await axios.post(
+          `https://graph.facebook.com/v21.0/${fbPageId}/messages`,
+          {
+            recipient: { id: igUserId },
+            message: { text: automation.dmMessage },
+            messaging_type: "RESPONSE"
+          },
+          {
+            params: { access_token: pageAccessToken }
+          }
+        );
+        
+        console.log("✅ Initial DM sent successfully");
+      } catch (msgErr) {
+        console.error("⚠️ Failed to send Initial DM text:", msgErr.response?.data || msgErr.message);
+        // We continue to the flow even if this fails, or you can return; to stop.
+      }
+    }
+
+    // ====================================================
+    // STEP 2: Prepare Conversation State
+    // ====================================================
     const firstNode = automation.flowNodes?.[0];
     
     if (!firstNode) {
@@ -445,26 +477,40 @@ async function startDirectFlow({
       return;
     }
 
-    // 1. Create ConversationState immediately
-    // Note: commentId is null because this didn't come from a comment
+    // Prepare history. If we sent a dmMessage, let's log it.
+    const historyLog = [];
+    
+    // Log the initial welcome message if it existed
+    if (automation.dmMessage) {
+       historyLog.push({
+          flowId: "initial_welcome",
+          flowName: "DIRECT_TRIGGER_WELCOME",
+          messageSent: automation.dmMessage,
+          userReply: null,
+          timestamp: new Date()
+       });
+    }
+
+    // Log the user's start action
+    historyLog.push({
+      flowId: String(firstNode.id),
+      flowName: "DIRECT_TRIGGER_START",
+      messageSent: "Starting Flow Nodes",
+      userReply: "Start Keyword Match",
+      timestamp: new Date(),
+    });
+
+    // 1. Create ConversationState 
     const conversation = await ConversationState.create({
       userId: automation.userId,
       automationId: automation._id,
       commentId: null, 
       messageId,
       igUserId: igUserId,
-      igUsername: null, // Can be updated later via Graph API if needed
+      igUsername: null, 
       currentFlowId: String(firstNode.id),
       flowConfig: automation.flowNodes,
-      conversationHistory: [
-        {
-          flowId: String(firstNode.id),
-          flowName: "DIRECT_TRIGGER",
-          messageSent: "User matched keyword via DM",
-          userReply: "Start",
-          timestamp: new Date(),
-        },
-      ],
+      conversationHistory: historyLog, // Updated history
       status: "active",
       startedAt: new Date(),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 Days
@@ -472,7 +518,12 @@ async function startDirectFlow({
 
     console.log("✅ ConversationState created for Direct Flow");
 
-    // 2. Execute the first node IMMEDIATELY
+    // ====================================================
+    // STEP 3: Execute the first node (Follow Check)
+    // ====================================================
+    // Optional: Add a small delay (e.g., 500ms) so the messages don't arrive out of order visually
+    await new Promise(resolve => setTimeout(resolve, 500));
+
     await executeFlowNode({
       flowNode: firstNode,
       conversation: conversation,
