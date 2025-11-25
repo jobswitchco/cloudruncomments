@@ -324,7 +324,7 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
       return await doPost(body);
     }
 
- case "button": {
+  case "button": {
       if (!buttons || buttons.length === 0) {
         throw new Error("buttons array is required");
       }
@@ -423,53 +423,197 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
   }
 }
 
+// ========== NEW: startDirectFlow (For DM triggers) ==========
+async function startDirectFlow({
+  automation,
+  igUserId,
+  pageAccessToken,
+  fbPageId,
+  messageId
+}) {
+  try {
+    console.log(`🚀 Starting Direct Flow for automation: ${automation._id}`);
 
-async function handleTextMessage(event) {
+    const firstNode = automation.flowNodes?.[0];
+    
+    if (!firstNode) {
+      console.error("❌ No flow nodes found in automation");
+      return;
+    }
+
+    // 1. Create ConversationState immediately
+    // Note: commentId is null because this didn't come from a comment
+    const conversation = await ConversationState.create({
+      userId: automation.userId,
+      automationId: automation._id,
+      commentId: null, 
+      igUserId: igUserId,
+      igUsername: null, // Can be updated later via Graph API if needed
+      currentFlowId: String(firstNode.id),
+      flowConfig: automation.flowNodes,
+      conversationHistory: [
+        {
+          flowId: String(firstNode.id),
+          flowName: "DIRECT_TRIGGER",
+          messageSent: "User matched keyword via DM",
+          userReply: "Start",
+          timestamp: new Date(),
+        },
+      ],
+      status: "active",
+      startedAt: new Date(),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 Days
+    });
+
+    console.log("✅ ConversationState created for Direct Flow");
+
+    // 2. Execute the first node IMMEDIATELY
+    await executeFlowNode({
+      flowNode: firstNode,
+      conversation: conversation,
+      senderId: igUserId,
+      pageAccessToken: pageAccessToken,
+      fbPageId: fbPageId
+    });
+
+    return { ok: true };
+
+  } catch (err) {
+    console.error("❌ Error in startDirectFlow:", err.message);
+    throw err;
+  }
+}
+
+// ========== UPDATED: handleTextMessage (Handles both Active Flows & New DM Keywords) ==========
+async function handleTextMessage(event, businessId) {
   const senderId = event.sender?.id;
   const text = event.message?.text;
+  const messageId = event.message?.mid; // Message ID from Meta
+  
   console.log("💬 Text message:", { senderId, text });
   
-  // Check if user is responding to initial private reply
+  const normalizedText = normalize(text);
+
+  // ========================================================================
+  // PATH A: EXISTING FLOW (User is responding to a Comment->Private Reply)
+  // ========================================================================
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
-    currentFlowId: "awaiting_user_response",
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
   
   if (conversation) {
-    console.log("✅ User responded to initial message, 24hr window now open");
-    
-    const creds = await ensureFreshPageTokenForUser(conversation.userId);
-    const accessToken = creds.fbPageAccessToken;
-    const fbPageId = creds.fbPageId;
-    
-    const initialNode = conversation.flowConfig.initial;
-    
-    try {
-      // Now we can send quick replies using user ID
-      await sendFlowMessage({
-        recipient: { id: String(senderId) },
-        flowNode: initialNode,
-        pageAccessToken: accessToken,
-        fbPageId: fbPageId,
-      });
-      
-      conversation.currentFlowId = "initial";
-      conversation.addHistory({
-        flowId: "initial",
-        flowName: "INITIAL",
-        messageSent: initialNode.message,
-        userReply: text,
-      });
-      await conversation.save();
-      
-      console.log("✅ Quick replies sent after user text response");
-    } catch (err) {
-      console.error("❌ Failed to send quick replies:", err.message);
-      conversation.markError(err);
-      await conversation.save();
+    // Scenario A1: User responded to the "Private Reply" (handshake)
+    if (conversation.currentFlowId === "awaiting_user_response") {
+        console.log("✅ User responded to initial message, 24hr window now open");
+        
+        const creds = await ensureFreshPageTokenForUser(conversation.userId);
+        const accessToken = creds.fbPageAccessToken;
+        const fbPageId = creds.fbPageId;
+        
+        // Use initial node
+        const initialNode = conversation.flowConfig.initial || conversation.flowConfig[0];
+        
+        try {
+          // Send quick replies (Standard Messaging)
+          await sendFlowMessage({
+            recipient: { id: String(senderId) },
+            flowNode: initialNode,
+            pageAccessToken: accessToken,
+            fbPageId: fbPageId,
+          });
+          
+          conversation.currentFlowId = String(initialNode.id || "initial");
+          conversation.addHistory({
+            flowId: "initial_response",
+            flowName: "USER_RESPONDED_TO_DM",
+            messageSent: initialNode.message,
+            userReply: text,
+          });
+          await conversation.save();
+          
+          console.log("✅ Quick replies sent after user text response");
+        } catch (err) {
+          console.error("❌ Failed to send quick replies:", err.message);
+          conversation.markError(err);
+          await conversation.save();
+        }
+    } else {
+        // Scenario A2: User typing in middle of flow
+        console.log("ℹ️ User typed text during active flow. Ignoring.");
     }
+  } 
+  // ========================================================================
+  // PATH B: NEW TRIGGER (User sends a DM Keyword like "Coach", "Link")
+  // ========================================================================
+  else {
+      console.log(`🔍 No active conversation. Checking keywords for Business ID: ${businessId}`);
+
+      if (!businessId) {
+          console.warn("⚠️ Cannot process DM trigger: Missing businessId");
+          return;
+      }
+
+      // 1. Find SaaS User owning this Page
+      const user = await User.findOne({ fbPageId: businessId }).lean();
+
+      if (!user) {
+        console.warn(`⚠️ No SaaS User found for Page ID: ${businessId}`);
+        return;
+      }
+
+      // 2. Find Active Automation matching Keyword
+      const automation = await Automation.findOne({
+        userId: user._id,
+        platform: "instagram",
+        status: "active",
+        keywords: { $in: [normalizedText] } 
+      }).lean();
+
+      if (!automation) {
+        console.log(`ℹ️ No automation found for keyword: "${normalizedText}"`);
+        return;
+      }
+
+      console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
+
+      // 3. Deduplication (Prevent multiple triggers)
+      try {
+         await ActionLock.create({
+           automationId: automation._id,
+           postId: "DM_TRIGGER", 
+           igUserId: senderId,
+           commentId: messageId, // Use Message ID as unique key
+           channel: "dm_trigger",
+           state: "sent",
+           reservedAt: new Date(),
+           sentAt: new Date()
+         });
+      } catch (err) {
+        if (err.code === 11000) {
+          console.log("⚠️ Duplicate DM webhook event detected (ActionLock). Skipping.");
+          return;
+        }
+        console.error("ActionLock error", err);
+      }
+
+      // 4. Get Tokens
+      const creds = await ensureFreshPageTokenForUser(user._id);
+      
+      if (!creds.fbPageAccessToken) {
+        console.error("❌ Could not get access token for user");
+        return;
+      }
+
+      // 5. Start Direct Flow
+      await startDirectFlow({
+        automation,
+        igUserId: senderId,
+        pageAccessToken: creds.fbPageAccessToken,
+        fbPageId: creds.fbPageId,
+        messageId
+      });
   }
 }
 
@@ -738,7 +882,7 @@ async function sendInitialDM({
       commentId: commentId,
       igUserId: igUserId,
       igUsername: igUsername,
-       currentFlowId: String(automation.flowNodes[0]?.id),
+       currentFlowId: String(automation.flowNodes[0]?.id),
       flowConfig: automation.flowNodes,
       conversationHistory: [
         {
@@ -763,7 +907,7 @@ async function sendInitialDM({
 }
 
 
-// ========== PUB/SUB ENDPOINT: MESSAGING ==========
+// ========== UPDATED: PUB/SUB ENDPOINT: MESSAGING ==========
 app.post("/pubsub-messaging", async (req, res) => {
   try {
     console.log("📨 /pubsub-messaging called");
@@ -800,26 +944,30 @@ app.post("/pubsub-messaging", async (req, res) => {
     }
 
     for (const entry of entries) {
-      const messaging = entry?.messaging || [];
+      // ✅ EXTRACT BUSINESS ID (Page ID)
+      // This is crucial for DM triggers to know WHICH business received the message
+      const businessId = entry.id;
 
-      console.log(`📬 Processing ${messaging.length} messaging events`);
+      const messaging = entry?.messaging || [];
+      console.log(`📬 Processing ${messaging.length} messaging events for Business: ${businessId}`);
 
       for (const event of messaging) {
-        // ✅ UPDATED: Handle postback events
+        // Handle postback events
         if (event.postback) {
           await handlePostback(event);
           continue;
         }
 
-        // ✅ UPDATED: Handle quick_reply events (same as postback)
+        // Handle quick_reply events (same as postback)
         if (event.message?.quick_reply) {
           await handlePostback(event);
           continue;
         }
 
-        // ✅ UPDATED: Handle regular text messages
+        // Handle regular text messages
+        // ✅ PASS businessId to handleTextMessage
         if (event.message && !event.message.quick_reply) {
-          await handleTextMessage(event);
+          await handleTextMessage(event, businessId);
           continue;
         }
 
@@ -1415,7 +1563,7 @@ async function handlePostback(event) {
               senderId,
               pageAccessToken: accessToken,
               fbPageId,
-            });
+              });
 
             console.log("✅ Next flow node executed");
             return;
