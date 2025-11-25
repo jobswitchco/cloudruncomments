@@ -429,8 +429,6 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
 
 // ========== NEW: startDirectFlow (For Auto DM triggers) ==========
 
-import axios from "axios";
-
 async function startDirectFlow({
   automation,
   igUserId,
