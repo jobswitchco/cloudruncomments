@@ -556,52 +556,8 @@ async function handleTextMessage(event, businessId) {
       }
 
       // 1. Try Direct Lookup (This might fail if ID mismatch exists)
-      let user = await User.findOne({ fbPageId: businessId }).lean();
+      let user = await User.findOne({ igUserId: businessId }).lean();
 
-      // 2. FALLBACK: Reverse Lookup via Automation
-      // If we couldn't find the user by ID, maybe we can find them via the unique Keyword
-      if (!user) {
-          console.log(`⚠️ Direct User lookup failed for ${businessId}. Trying Reverse Lookup via Automation keywords...`);
-          
-          // Find active automations with this keyword
-          const potentialAutomations = await Automation.find({
-            platform: "instagram",
-            status: "active",
-            keywords: { $in: [normalizedText] }
-          }).limit(5).lean();
-
-          // Loop through potential automations to find the correct owner
-          for (const auto of potentialAutomations) {
-              const potentialUser = await User.findById(auto.userId).lean();
-              if (!potentialUser) continue;
-
-              // CHECK: Does this user's token work for the recipient businessId?
-              // This confirms if "potentialUser" actually owns the page receiving the DM.
-              if (potentialUser.fbPageAccessToken) {
-                  try {
-                      const verifyUrl = `${FB_API}/${businessId}`;
-                      await axios.get(verifyUrl, {
-                          params: { 
-                              fields: 'id',
-                              access_token: potentialUser.fbPageAccessToken 
-                          }
-                      });
-                      
-                      console.log(`✅ Reverse Lookup Verified: User ${potentialUser._id} owns ${businessId}`);
-                      user = potentialUser; // FOUND THE CORRECT USER
-                      break;
-                  } catch (verifyErr) {
-                       // Token invalid for this page -> Not the owner
-                       continue;
-                  }
-              }
-          }
-      }
-
-      if (!user) {
-        console.warn(`❌ No SaaS User found for Page ID: ${businessId} even after automation lookup.`);
-        return;
-      }
 
       // 3. Re-Check Automation (in case we found user via ID but need the specific automation now)
       // Note: If we found user via automation loop, we could pass the automation object directly, 
