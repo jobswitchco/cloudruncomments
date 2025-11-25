@@ -555,15 +555,57 @@ async function handleTextMessage(event, businessId) {
           return;
       }
 
-      // 1. Find SaaS User owning this Page
-      const user = await User.findOne({ fbPageId: businessId }).lean();
+      // 1. Try Direct Lookup (This might fail if ID mismatch exists)
+      let user = await User.findOne({ fbPageId: businessId }).lean();
+
+      // 2. FALLBACK: Reverse Lookup via Automation
+      // If we couldn't find the user by ID, maybe we can find them via the unique Keyword
+      if (!user) {
+          console.log(`⚠️ Direct User lookup failed for ${businessId}. Trying Reverse Lookup via Automation keywords...`);
+          
+          // Find active automations with this keyword
+          const potentialAutomations = await Automation.find({
+            platform: "instagram",
+            status: "active",
+            keywords: { $in: [normalizedText] }
+          }).limit(5).lean();
+
+          // Loop through potential automations to find the correct owner
+          for (const auto of potentialAutomations) {
+              const potentialUser = await User.findById(auto.userId).lean();
+              if (!potentialUser) continue;
+
+              // CHECK: Does this user's token work for the recipient businessId?
+              // This confirms if "potentialUser" actually owns the page receiving the DM.
+              if (potentialUser.fbPageAccessToken) {
+                  try {
+                      const verifyUrl = `${FB_API}/${businessId}`;
+                      await axios.get(verifyUrl, {
+                          params: { 
+                              fields: 'id',
+                              access_token: potentialUser.fbPageAccessToken 
+                          }
+                      });
+                      
+                      console.log(`✅ Reverse Lookup Verified: User ${potentialUser._id} owns ${businessId}`);
+                      user = potentialUser; // FOUND THE CORRECT USER
+                      break;
+                  } catch (verifyErr) {
+                       // Token invalid for this page -> Not the owner
+                       continue;
+                  }
+              }
+          }
+      }
 
       if (!user) {
-        console.warn(`⚠️ No SaaS User found for Page ID: ${businessId}`);
+        console.warn(`❌ No SaaS User found for Page ID: ${businessId} even after automation lookup.`);
         return;
       }
 
-      // 2. Find Active Automation matching Keyword
+      // 3. Re-Check Automation (in case we found user via ID but need the specific automation now)
+      // Note: If we found user via automation loop, we could pass the automation object directly, 
+      // but querying again is safer/cleaner code flow.
       const automation = await Automation.findOne({
         userId: user._id,
         platform: "instagram",
@@ -572,13 +614,13 @@ async function handleTextMessage(event, businessId) {
       }).lean();
 
       if (!automation) {
-        console.log(`ℹ️ No automation found for keyword: "${normalizedText}"`);
+        console.log(`ℹ️ No automation found for keyword: "${normalizedText}" (for verified user)`);
         return;
       }
 
       console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
 
-      // 3. Deduplication (Prevent multiple triggers)
+      // 4. Deduplication (Prevent multiple triggers - ActionLock)
       try {
          await ActionLock.create({
            automationId: automation._id,
@@ -598,7 +640,7 @@ async function handleTextMessage(event, businessId) {
         console.error("ActionLock error", err);
       }
 
-      // 4. Get Tokens
+      // 5. Get Tokens (Refresh if needed)
       const creds = await ensureFreshPageTokenForUser(user._id);
       
       if (!creds.fbPageAccessToken) {
@@ -606,12 +648,12 @@ async function handleTextMessage(event, businessId) {
         return;
       }
 
-      // 5. Start Direct Flow
+      // 6. Start Direct Flow (Creates ConversationState & Sends Message)
       await startDirectFlow({
         automation,
         igUserId: senderId,
         pageAccessToken: creds.fbPageAccessToken,
-        fbPageId: creds.fbPageId,
+        fbPageId: creds.fbPageId || businessId, // Fallback to businessId if token refresh didn't return ID
         messageId
       });
   }
