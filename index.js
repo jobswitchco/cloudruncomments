@@ -590,7 +590,7 @@ async function handleTextMessage(event, businessId) {
       try {
          await ActionLock.create({
            automationId: automation._id,
-           postType,
+           postType: 'autodm',
            postId:'automDM12345',
            igUserId: senderId,
            commentId: messageId, // Use Message ID as unique key
