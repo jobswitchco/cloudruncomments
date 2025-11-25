@@ -608,10 +608,6 @@ async function handleTextMessage(event, businessId) {
         }
     } 
     
-    else {
-        // Scenario A2: User typing in middle of flow
-        console.log("ℹ️ User typed text during active flow. Ignoring.");
-    }
   }
 
   // ========================================================================
@@ -1541,7 +1537,7 @@ async function handlePostback(event) {
     console.warn("⚠️ No conversation found for postback");
     return;
   }
-  
+
       if (payload === "INITIAL_DM_CLICKED") {
           console.log("✅ User clicked Initial DM Button. Starting Flow Nodes...");
 
