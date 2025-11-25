@@ -558,6 +558,10 @@ async function handleTextMessage(event, businessId) {
       // 1. Try Direct Lookup (This might fail if ID mismatch exists)
       let user = await User.findOne({ igUserId: businessId }).lean();
 
+      console.log('Business Id : ', businessId);
+      console.log('User : ', user);
+      console.log('Keywords : ', normalizedText);
+
 
       // 3. Re-Check Automation (in case we found user via ID but need the specific automation now)
       // Note: If we found user via automation loop, we could pass the automation object directly, 
@@ -568,6 +572,9 @@ async function handleTextMessage(event, businessId) {
         status: "active",
         keywords: { $in: [normalizedText] } 
       }).lean();
+
+      console.log('automation : ', automation);
+
 
       if (!automation) {
         console.log(`ℹ️ No automation found for keyword: "${normalizedText}" (for verified user)`);
