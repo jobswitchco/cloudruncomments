@@ -47,7 +47,6 @@ async function connectMongo() {
       maxPoolSize: 10,
       serverSelectionTimeoutMS: 10000,
     });
-    console.log("✅ MongoDB connected");
   }
 }
 
@@ -59,6 +58,7 @@ function normalize(str = "") {
 async function extractCommentEvents(envelope) {
   const events = [];
   const entries = envelope?.body?.entry || [];
+  console.log('Entries :::', entries);
   
   for (const entry of entries) {
     const entryTime = entry?.time || null;
@@ -164,140 +164,6 @@ async function replyToCommentPublic(commentId, replyText, pageAccessToken) {
   return res.data;
 }
 
-async function sendTextMessage({ fbPageId, commentId, message, pageAccessToken }) {
-  const url = `${FB_API}/${fbPageId}/messages`;
-  const msgBody = {
-    recipient: { comment_id: String(commentId) },
-    message: { text: message },
-  };
-
-  const { data, status } = await http.post(url, msgBody, {
-    params: { access_token: pageAccessToken },
-  });
-
-  if (status >= 400) {
-    const err = new Error("Text message failed");
-    err.details = data?.error || data;
-    throw err;
-  }
-
-  console.log("✅ Text message sent", commentId);
-  return data;
-}
-
-async function sendButtonTemplate({ fbPageId, commentId, message, buttons, pageAccessToken }) {
-  if (!Array.isArray(buttons) || buttons.length === 0) {
-    throw new Error("buttons array is required");
-  }
-
-  const cleanButtons = buttons
-    .filter(Boolean)
-    .slice(0, 3)
-    .map((btn) => {
-      const url = typeof btn.url === "string" ? btn.url.trim() : "";
-      const title = String(btn.text || btn.title || "Open").trim().slice(0, 20);
-      return { original: btn, url, title };
-    })
-    .filter((b) => b.url && b.url.startsWith("https://"));
-
-  if (!cleanButtons.length) {
-    throw new Error("No valid buttons after normalization (require https URLs, max 3)");
-  }
-
-  const payloadButtons = cleanButtons.map((b) => ({
-    type: "web_url",
-    url: b.url,
-    title: b.title || "Open",
-  }));
-
-  const url = `${FB_API}/${fbPageId}/messages`;
-  const msgBody = {
-    recipient: { comment_id: String(commentId) },
-    message: {
-      attachment: {
-        type: "template",
-        payload: {
-          template_type: "button",
-          text: message || "",
-          buttons: payloadButtons,
-        },
-      },
-    },
-  };
-
-  try {
-    const { data, status } = await http.post(url, msgBody, {
-      params: { access_token: pageAccessToken },
-    });
-
-    if (status >= 400) {
-      const err = new Error("Button template failed");
-      err.details = data?.error || data;
-      throw err;
-    }
-
-    console.log("✅ Button template sent", { commentId, response: data });
-    return { ok: true, data };
-  } catch (err) {
-    const details = err.details || err.response?.data || (err.message ? { message: err.message } : err);
-    console.error("⚠️ sendButtonTemplate error:", JSON.stringify(details, null, 2));
-
-    const subcode = details?.error_subcode || details?.error?.error_subcode || details?.code;
-    if (subcode === 2534023 || (details?.message && /already has a reply/i.test(details.message))) {
-      const noteworthy = new Error("Comment already has a reply (2534023)");
-      noteworthy.details = details;
-      noteworthy.code = 2534023;
-      throw noteworthy;
-    }
-
-    const e = new Error("Button template failed");
-    e.details = details;
-    throw e;
-  }
-}
-
-async function sendPrivateReply({ fbPageId, commentId, message, pageAccessToken, button }) {
-  const hasButton = button && typeof button.url === "string" && button.url.trim();
-
-  if (!hasButton) {
-    return await sendTextMessage({ fbPageId, commentId, message, pageAccessToken });
-  }
-
-  try {
-    const resp = await sendButtonTemplate({ fbPageId, commentId, message, buttons: [button], pageAccessToken });
-    return resp;
-  } catch (err) {
-    if (err.code === 2534023 || (err.details && err.details.error_subcode === 2534023)) {
-      console.warn("⚠️ Button template rejected (already has reply). Attempting text fallback.");
-      const fallbackMsg = message ? `${message}\n\nOpen here: ${button.url}` : `Open here: ${button.url}`;
-
-      try {
-        const txt = await sendTextMessage({ fbPageId, commentId, message: fallbackMsg, pageAccessToken });
-        console.log("✅ Fallback text succeeded");
-        return { ok: true, data: txt, fallback: true, reason: "already_has_reply" };
-      } catch (tErr) {
-        console.error("❌ Fallback text failed:", JSON.stringify(tErr?.response?.data || tErr?.message));
-        const re = new Error("Button and fallback text both failed");
-        re.details = { buttonError: err.details, fallbackError: tErr?.response?.data || tErr?.message };
-        throw re;
-      }
-    }
-
-    console.warn("⚠️ sendButtonTemplate failed. Trying text fallback.");
-    const fallbackMsg = message ? `${message}\n\nOpen here: ${button.url}` : `Open here: ${button.url}`;
-    try {
-      const txt = await sendTextMessage({ fbPageId, commentId, message: fallbackMsg, pageAccessToken });
-      console.log("✅ Fallback text succeeded");
-      return { ok: true, data: txt, fallback: true, reason: "button_error" };
-    } catch (tErr) {
-      console.error("❌ Fallback text failed:", JSON.stringify(tErr?.response?.data || tErr?.message));
-      const re = new Error("Button and fallback text both failed");
-      re.details = { buttonError: err.details, fallbackError: tErr?.response?.data || tErr?.message };
-      throw re;
-    }
-  }
-}
-
 
 async function reserveAction({ automationId, postId, igUserId, commentText, commentId, channel }) {
   const now = new Date();
@@ -367,52 +233,6 @@ async function finalizeAction({ automationId, postId, igUserId, commentText, com
   }
 }
 
-// ============================================================================
-// OPTIONAL: Cleanup function to remove old failed/expired reservations
-// ============================================================================
-async function cleanupStaleLocks() {
-  const staleThreshold = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
-  
-  try {
-    const result = await ActionLock.deleteMany({
-      state: "reserved",
-      reservedAt: { $lt: staleThreshold }
-    });
-    
-    if (result.deletedCount > 0) {
-      console.log(`🧹 Cleaned up ${result.deletedCount} stale locks`);
-    }
-  } catch (err) {
-    console.error("❌ cleanupStaleLocks error:", err.message);
-  }
-}
-
-async function isEventProcessed(eventId) {
-  if (!eventId) return false;
-  
-  try {
-    const existing = await ProcessedEvent.findOne({ eventId });
-    return !!existing;
-  } catch (err) {
-    console.error("❌ Error checking processed event:", err.message);
-    return false; // Fail open to avoid blocking legitimate events
-  }
-}
-
-async function markEventProcessed(eventId) {
-  if (!eventId) return;
-  
-  try {
-    await ProcessedEvent.create({ eventId });
-    console.log("✅ Event marked as processed:", eventId);
-  } catch (err) {
-    if (err.code === 11000) {
-      console.log("ℹ️ Event already marked as processed:", eventId);
-    } else {
-      console.error("❌ Error marking event:", err.message);
-    }
-  }
-}
 
 
 // ---------- CRITICAL: sendFlowMessage - handles BOTH comment_id (private reply) and user id (DM) ----------
@@ -599,12 +419,6 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
   }
 }
 
-
-
-async function handleQuickReply(event) {
-  console.log("➡️ Quick reply received");
-  await handlePostback(event);
-}
 
 async function handleTextMessage(event) {
   const senderId = event.sender?.id;
@@ -945,60 +759,6 @@ async function sendInitialDM({
 }
 
 
-async function sendFlowNodeMessage({
-  fbPageId,
-  igUserId,
-  pageAccessToken,
-  flowNode,
-}) {
-  if (!flowNode) {
-    throw new Error("flowNode is required");
-  }
-
-  const url = `${FB_API}/${fbPageId}/messages`;
-
-  // If node is quickReply type, send quick_replies
-  if (flowNode.type === "quickReply") {
-    const quickReplies = (flowNode.replyOptions || [])
-      .slice(0, 13)
-      .map((option) => ({
-        content_type: "text",
-        title: (option.text || "Option").toString().slice(0, 20),
-        payload: `QR_${flowNode.id}_${option.id}`,
-      }));
-
-    if (quickReplies.length === 0) {
-      throw new Error("No quick reply options available");
-    }
-
-    const qrBody = {
-      recipient: { id: String(igUserId) },  // ✅ Use user id for quick replies
-      message: {
-        text: flowNode.config?.quickReplyQuestion || "Choose one:",
-        quick_replies: quickReplies,
-      },
-    };
-
-    console.log("→ Sending quick_replies to user:", igUserId);
-
-    const { data: qrData, status: qrStatus } = await http.post(
-      url,
-      qrBody,
-      { params: { access_token: pageAccessToken } }
-    );
-
-    if (qrStatus >= 400) {
-      throw new Error(`Quick replies failed: ${JSON.stringify(qrData)}`);
-    }
-
-    console.log("✅ Quick replies sent");
-    return qrData;
-  }
-
-  // If other node types, handle differently
-  throw new Error(`Unsupported node type: ${flowNode.type}`);
-}
-
 // ========== PUB/SUB ENDPOINT: MESSAGING ==========
 app.post("/pubsub-messaging", async (req, res) => {
   try {
@@ -1074,77 +834,7 @@ app.post("/pubsub-messaging", async (req, res) => {
   }
 });
 
-// ============================================================================
-// NEW HELPER FUNCTION: Send Quick Replies for Flow Node
-// ============================================================================
-// Call this function when you need to send quick_replies from a flow node
 
-async function sendQuickRepliesForNode({
-  fbPageId,
-  senderId,
-  flowNode,
-  pageAccessToken,
-}) {
-  if (!flowNode || flowNode.type !== "quickReply") {
-    throw new Error("flowNode must be of type 'quickReply'");
-  }
-
-  if (!flowNode.config || !flowNode.config.quickReplyQuestion) {
-    throw new Error("Quick reply node missing question");
-  }
-
-  if (!flowNode.replyOptions || flowNode.replyOptions.length === 0) {
-    throw new Error("Quick reply node missing reply options");
-  }
-
-  const url = `${FB_API}/${fbPageId}/messages`;
-
-  // Build quick reply options from flowNode.replyOptions
-  const quickReplies = flowNode.replyOptions
-    .slice(0, 13) // Max 13 quick replies
-    .map((option, idx) => ({
-      content_type: "text",
-      title: (option.text || `Option ${idx + 1}`).toString().slice(0, 20),
-      payload: option.id ? `QR_${flowNode.id}_${option.id}` : `QR_${flowNode.id}_${idx}`,
-    }));
-
-  if (quickReplies.length === 0) {
-    throw new Error("No valid quick reply options after processing");
-  }
-
-  const messageBody = {
-    recipient: { id: String(senderId) },
-    message: {
-      text: flowNode.config.quickReplyQuestion || "Choose an option:",
-      quick_replies: quickReplies,
-    },
-  };
-
-  console.log("→ Sending quick replies:", {
-    senderId,
-    question: flowNode.config.quickReplyQuestion,
-    optionCount: quickReplies.length,
-  });
-
-  const { data, status } = await http.post(url, messageBody, {
-    params: { access_token: pageAccessToken },
-  });
-
-  if (status >= 400) {
-    const err = new Error("Quick replies send failed");
-    err.details = data?.error || data;
-    throw err;
-  }
-
-  console.log("✅ Quick replies sent successfully");
-  return data;
-}
-
-
-
-// ============================================================================
-// UPDATED: Dynamic Flow Execution Engine
-// ============================================================================
 
 /**
  * Execute a flow node dynamically based on its type
@@ -1255,9 +945,6 @@ async function executeQuickReplyNode({
   }
 }
 
-/**
- * Execute a followCheck node
- */
 /**
  * Execute a followCheck node
  */
@@ -2134,8 +1821,6 @@ async function handlePostback(event) {
     }
   }
 }
-
-
 
 
 
