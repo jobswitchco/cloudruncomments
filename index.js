@@ -429,6 +429,8 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
 
 // ========== NEW: startDirectFlow (For Auto DM triggers) ==========
 
+import axios from "axios";
+
 async function startDirectFlow({
   automation,
   igUserId,
@@ -439,28 +441,21 @@ async function startDirectFlow({
   try {
     console.log(`🚀 Starting Direct Flow for automation: ${automation._id}`);
 
-    // VALIDATION: We need the button text to send a Quick Reply
-    if (!automation.buttonText) {
-       console.warn("⚠️ No buttonText found, falling back to immediate execution not supported in this version.");
-       // logic to handle no button if necessary
-    }
-
     // 1. Create ConversationState 
-    // We set currentFlowId to a special flag: "awaiting_initial_button_click"
+    // Set status to special flag: "awaiting_initial_button_click"
     const conversation = await ConversationState.create({
       userId: automation.userId,
       automationId: automation._id,
       commentId: null, 
       messageId,
       igUserId: igUserId,
-      currentFlowId: "awaiting_initial_button_click", // <--- IMPORTANT STATE
+      currentFlowId: "awaiting_initial_button_click", // <--- Special Flag
       flowConfig: automation.flowNodes,
       conversationHistory: [
         {
           flowId: "initial_dm",
           flowName: "DIRECT_TRIGGER_INITIAL_MSG",
           messageSent: automation.dmMessage,
-          userReply: null,
           timestamp: new Date(),
         },
       ],
@@ -471,31 +466,36 @@ async function startDirectFlow({
 
     console.log("✅ ConversationState created. Status: awaiting_initial_button_click");
 
-    // 2. Send the Initial DM with Quick Reply Button
-    const quickReplyPayload = {
+    // 2. Send INITIAL DM with BUTTON TEMPLATE (Not Quick Reply)
+    // This allows the button to persist.
+    const buttonPayload = {
       recipient: { id: igUserId },
-      messaging_type: "RESPONSE",
       message: {
-        text: automation.dmMessage, // "Hey! Thanks for your interest..."
-        quick_replies: [
-          {
-            content_type: "text",
-            title: automation.buttonText, // "Send Link"
-            payload: "INITIAL_DM_CLICKED"
+        attachment: {
+          type: "template",
+          payload: {
+            template_type: "button",
+            text: automation.dmMessage, // "Hey! Thanks..."
+            buttons: [
+              {
+                type: "postback", 
+                title: automation.buttonText || "Continue", // "Send Link"
+                payload: "INITIAL_DM_CLICKED" 
+              }
+            ]
           }
-        ]
+        }
       }
     };
 
     await axios.post(
       `https://graph.facebook.com/v21.0/${fbPageId}/messages`,
-      quickReplyPayload,
+      buttonPayload,
       { params: { access_token: pageAccessToken } }
     );
 
-    console.log(`✅ Sent Initial DM with button: "${automation.buttonText}"`);
+    console.log(`✅ Sent Initial DM with Button Template: "${automation.buttonText}"`);
     
-    // WE STOP HERE. We do NOT execute flowNodes yet.
     return { ok: true };
 
   } catch (err) {
@@ -510,6 +510,11 @@ async function handleTextMessage(event, businessId) {
   const senderId = event.sender?.id;
   const text = event.message?.text;
   const messageId = event.message?.mid; // Message ID from Meta
+
+  if (event.message?.is_echo) {
+      console.log("ℹ️ Ignoring Echo message (bot sent this).");
+      return; 
+  }
   
   console.log("💬 Text message:", { senderId, text });
   
@@ -526,13 +531,16 @@ async function handleTextMessage(event, businessId) {
   
   if (conversation) {
 
-    if (conversation.currentFlowId === "awaiting_initial_button_click") {
-        console.log("✅ User clicked Initial DM button. Starting Flow Nodes...");
+  // Inside handlePostbackOrQuickReply...
 
-        // 1. Get Tokens
-        const creds = await ensureFreshPageTokenForUser(conversation.userId);
-        
-        // 2. Get the First Node (Follow Check)
+// 1. Check if we are in the "awaiting_initial_button_click" state
+if (conversation.currentFlowId === "awaiting_initial_button_click") {
+    
+    // Check if the user clicked the correct button
+    if (payload === "INITIAL_DM_CLICKED") {
+        console.log("✅ User clicked Initial DM Button. Starting Flow Nodes...");
+
+        // A. Find the FIRST ACTUAL NODE from the config
         const firstNode = conversation.flowConfig?.[0];
 
         if (!firstNode) {
@@ -540,17 +548,19 @@ async function handleTextMessage(event, businessId) {
             return;
         }
 
-        // 3. Update Conversation History & State
-        conversation.currentFlowId = String(firstNode.id); // Move state to first node
+        // B. Update the Conversation State
+        conversation.currentFlowId = String(firstNode.id); // Set to real Node ID
         conversation.addHistory({
-            flowId: "initial_dm_response",
-            flowName: "USER_CLICKED_INITIAL_BUTTON",
-            messageSent: "Initial DM Button",
-            userReply: text, // This will be "Send Link"
+            flowId: "initial_dm_click",
+            flowName: "USER_CLICKED_BUTTON",
+            messageSent: "Initial Button",
+            userReply: title || "Button Clicked",
         });
         await conversation.save();
 
-        // 4. Execute the First Node (The Follow Check)
+        // C. Execute the First Node
+        const creds = await ensureFreshPageTokenForUser(conversation.userId);
+        
         await executeFlowNode({
             flowNode: firstNode,
             conversation: conversation,
@@ -558,9 +568,10 @@ async function handleTextMessage(event, businessId) {
             pageAccessToken: creds.fbPageAccessToken,
             fbPageId: creds.fbPageId
         });
-
-        return; // Done
+        
+        return; // Stop here, don't look for other nodes
     }
+}
 
     // Scenario A1: User responded to the "Private Reply" (handshake)
     else if (conversation.currentFlowId === "awaiting_user_response") {
