@@ -1525,27 +1525,29 @@ async function handlePostback(event) {
   console.log("📲 Postback/QuickReply received:", { senderId, payload, title });
 
 
-  if (conversation.currentFlowId === "awaiting_initial_button_click") {
-      
-    const conversation = await ConversationState.findOne({
+      const conversational = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
 
-  if (!conversation) {
+  if (!conversational) {
     console.warn("⚠️ No conversation found for postback");
     return;
   }
+
+  if (conversational.currentFlowId === "awaiting_initial_button_click") {
+      
+
 
       if (payload === "INITIAL_DM_CLICKED") {
           console.log("✅ User clicked Initial DM Button. Starting Flow Nodes...");
 
           // 1. Get Tokens
-          const creds = await ensureFreshPageTokenForUser(conversation.userId);
+          const creds = await ensureFreshPageTokenForUser(conversational.userId);
           
           // 2. Get the First Node (Follow Check)
-          const firstNode = conversation.flowConfig?.[0];
+          const firstNode = conversational.flowConfig?.[0];
 
           if (!firstNode) {
               console.error("❌ No flow nodes found in configuration");
@@ -1553,19 +1555,19 @@ async function handlePostback(event) {
           }
 
           // 3. Update Conversation History & State
-          conversation.currentFlowId = String(firstNode.id); 
-          conversation.addHistory({
+          conversational.currentFlowId = String(firstNode.id); 
+          conversational.addHistory({
               flowId: "initial_dm_click",
               flowName: "USER_CLICKED_BUTTON",
               messageSent: "Initial DM Button",
               userReply: title, 
           });
-          await conversation.save();
+          await conversational.save();
 
           // 4. Execute the First Node 
           await executeFlowNode({
               flowNode: firstNode,
-              conversation: conversation,
+              conversation: conversational,
               senderId: senderId,
               pageAccessToken: creds.fbPageAccessToken,
               fbPageId: creds.fbPageId
