@@ -16,12 +16,15 @@ app.use(express.json({ type: "*/*" }));
 // Config
 const PORT = 8080;
 const PUBSUB_TOKEN = process.env.PUBSUB_TOKEN || "";
-const META_APP_ID = "1360956302356492";
-const META_APP_SECRET = "2b21c578035bd7b96b24ba43e4479a52";
+const META_APP_ID = process.env.META_APP_ID;
+const META_APP_SECRET = process.env.META_APP_SECRET;
 const FB_API = "https://graph.facebook.com/v24.0";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const MONGO_URI = "mongodb+srv://jobswitchco:1q2unIeMxwn9IpUB@clusterjob.5grzhlw.mongodb.net/?retryWrites=true&w=majority&appName=ClusterJob";
+const db_username = process.env.MONGO_DB_USER;
+const db_password = process.env.MONGO_DB_PASS;
+
+var MONGO_URI = 'mongodb+srv://'+db_username+':'+db_password+'@cluster0.itfkrwb.mongodb.net/?appName=Cluster0';
 
 // ---------- Axios setup ----------
 const http = axios.create({
@@ -67,8 +70,6 @@ async function extractCommentEvents(envelope) {
     const entryTime = entry?.time || null;
     const changes = entry?.changes || [];
 
-  console.log('changes :::', changes);
-
 
     for (const ch of changes) {
       const v = ch?.value || {};
@@ -85,7 +86,6 @@ async function extractCommentEvents(envelope) {
     }
   }
 
-  console.log('Events : ', events);
   return events;
 }
 
