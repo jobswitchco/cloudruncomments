@@ -174,7 +174,7 @@ async function ensureFreshPageTokenForUser(userId) {
 
   const remain = daysLeft(user.fbLongLivedTokenExpiry);
 
-  if (remain < 7) {
+  if (remain < 28) {
     try {
       return await refreshFbTokensForUser(user);
     } catch (e) {
