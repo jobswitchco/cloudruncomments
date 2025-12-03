@@ -1108,46 +1108,55 @@ async function executeQuickReplyNode({
   fbPageId,
 }) {
 
-  const quickReplies = (flowNode.replyOptions || [])
-    .slice(0, 13)
+  // LIMITATION: Button Templates only support up to 3 buttons.
+  // We slice(0, 3) to prevent API errors.
+  const buttons = (flowNode.replyOptions || [])
+    .slice(0, 3) 
     .map((option) => ({
-      content_type: "text",
+      type: "postback", // Changed to postback for buttons
       title: (option.text || "Option").toString().slice(0, 20),
       payload: `QR_${flowNode.id}_${option.id}`,
     }));
 
-  if (quickReplies.length === 0) {
+  if (buttons.length === 0) {
     throw new Error("No quick reply options available");
   }
 
   const url = `${FB_API}/${fbPageId}/messages`;
-  const qrBody = {
+  
+  // MODIFIED: Constructing a Button Template Payload instead of Text+QuickReplies
+  const buttonBody = {
     recipient: { id: String(senderId) },
     message: {
-      text: flowNode.config?.quickReplyQuestion || "Choose one:",
-      quick_replies: quickReplies,
+      attachment: {
+        type: "template",
+        payload: {
+          template_type: "button",
+          text: flowNode.config?.quickReplyQuestion || "Choose one:",
+          buttons: buttons,
+        },
+      },
     },
   };
 
-  console.log("→ Sending quick_replies to user:", senderId);
+  console.log("→ Sending quick_reply as BUTTONS to user:", senderId);
 
-  // ✅ SINGLE POST REQUEST with proper error handling
   try {
-    const { data, status } = await http.post(url, qrBody, {
+    const { data, status } = await http.post(url, buttonBody, {
       params: { access_token: pageAccessToken },
     });
     
     if (status >= 400) {
       console.error("Facebook API error data:", data);
-      throw new Error(`Quick replies failed: ${JSON.stringify(data)}`);
+      throw new Error(`Quick replies (buttons) failed: ${JSON.stringify(data)}`);
     }
     
-    console.log("✅ Quick replies sent");
+    console.log("✅ Quick replies (buttons) sent");
 
     // Update conversation
     conversation.addHistory({
       flowId: String(flowNode.id),
-      flowName: "QUICK_REPLY",
+      flowName: "QUICK_REPLY_BUTTONS",
       messageSent: flowNode.config?.quickReplyQuestion,
       timestamp: new Date(),
     });
@@ -1398,9 +1407,9 @@ async function executeAction({
       return { success: true, completed: true };
     }
 
-    case "quickReply": {
-      // ✅ NESTED QUICK REPLY
-      console.log("→ Executing nested quickReply");
+  case "quickReply": {
+      // ✅ NESTED QUICK REPLY (MODIFIED TO BUTTONS)
+      console.log("→ Executing nested quickReply as BUTTONS");
 
       const nestedConfig = action.config;
 
@@ -1409,7 +1418,6 @@ async function executeAction({
         return { success: false, error: "Missing nested config" };
       }
 
-      // FIX: Get replyOptions from action level first, then fallback to config level
       const nestedOptions = action.replyOptions || nestedConfig.replyOptions || [];
       
       console.log("📋 Nested options found:", nestedOptions.length);
@@ -1419,49 +1427,59 @@ async function executeAction({
         return { success: false, error: "No options" };
       }
 
-      const quickReplies = nestedOptions.slice(0, 13).map((option) => ({
-        content_type: "text",
+      // LIMITATION: Slice to 3 buttons max for Button Template
+      const buttonPayloads = nestedOptions.slice(0, 3).map((option) => ({
+        type: "postback",
         title: (option.text || "Option").toString().slice(0, 20),
         payload: `QR_NESTED_${parentNodeId}_${option.id}`,
       }));
 
-      console.log("📤 Sending nested quick replies to user");
+      console.log("📤 Sending nested buttons to user");
 
-      await sendFlowMessage({
-        recipient: { id: senderId },
-        flowNode: {
-          type: "quick_replies",
-          message: nestedConfig.quickReplyQuestion || "Choose one:",
-          quick_replies: quickReplies,
+      // Manually sending Button Template here (bypassing sendFlowMessage to ensure structure)
+      const url = `${FB_API}/${fbPageId}/messages`;
+      const buttonBody = {
+        recipient: { id: String(senderId) },
+        message: {
+          attachment: {
+            type: "template",
+            payload: {
+              template_type: "button",
+              text: nestedConfig.quickReplyQuestion || "Choose one:",
+              buttons: buttonPayloads,
+            },
+          },
         },
-        pageAccessToken,
-        fbPageId,
-      });
+      };
 
-      console.log("✅ Nested quick replies sent");
+      try {
+        await http.post(url, buttonBody, { params: { access_token: pageAccessToken } });
+      } catch (e) {
+         console.error("Error sending nested buttons:", e.message);
+         throw e;
+      }
+
+      console.log("✅ Nested buttons sent");
 
       // Store nested config for next interaction
-      // FIX: Include the replyOptions in the stored config
       const configToStore = {
         parentNodeId: String(parentNodeId),
         parentOptionId: String(selectedOption.id),
         nestedConfig: {
           ...nestedConfig,
-          replyOptions: nestedOptions // Ensure replyOptions are included
+          replyOptions: nestedOptions 
         },
       };
 
       conversation.currentNestedQuickReplyConfig = configToStore;
       
-      // Add to history
       conversation.addHistory({
         flowId: String(parentNodeId),
-        flowName: "NESTED_QUICK_REPLY_SENT",
+        flowName: "NESTED_BUTTONS_SENT",
         messageSent: nestedConfig.quickReplyQuestion,
         timestamp: new Date(),
       });
 
-      // CRITICAL: Save the conversation with nested config
       await conversation.save();
       
       console.log("💾 Nested config saved:", {
