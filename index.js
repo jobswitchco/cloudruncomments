@@ -755,8 +755,24 @@ for (const c of commentEvents) {
       continue;
     }
 
+    // 1. Gather available replies (handle both new Array and old String for backward compatibility)
+    let replyCandidates = [];
+    
+    // Check new array format
+    if (Array.isArray(auto.replyComments) && auto.replyComments.length > 0) {
+      replyCandidates = auto.replyComments;
+    } 
+    // Fallback to old string format if array is empty
+    else if (auto.replyComment) {
+      replyCandidates = [auto.replyComment];
+    }
+
     // ========== PUBLIC REPLY ==========
-    if (auto.hasReply && auto.replyComment) {
+   if (auto.hasReply && replyCandidates.length > 0) {
+      
+      // 3. Select a random reply
+      const replyTextToSend = replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
+
       const { proceed } = await reserveAction({
         automationId: auto._id,
         postId: c.mediaId,
@@ -768,8 +784,9 @@ for (const c of commentEvents) {
 
       if (proceed) {
         try {
-          await replyToCommentPublic(c.commentId, auto.replyComment, accessToken);
-          console.log("✅ Public reply sent:", c.commentId);
+          // 4. Send the selected random text
+          await replyToCommentPublic(c.commentId, replyTextToSend, accessToken);
+          console.log(`✅ Public reply sent (${replyTextToSend}):`, c.commentId);
 
           await finalizeAction({
             automationId: auto._id,

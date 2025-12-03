@@ -17,7 +17,8 @@ const AutomationSchema = new Schema(
     flowNodes: { type: Array, default: []},
     keywords: { type: Array, default: []},
     hasReply: { type: Boolean, default: false},
-    replyComment: { type: String},
+    replyComments: { type: [String], default: [] },
+
 
     createdAt: { type: Date },
     status: {
