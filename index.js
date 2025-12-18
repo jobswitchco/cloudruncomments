@@ -10,7 +10,7 @@ import User from "./models/User.js";
 import ActionLock from "./models/ActionLock.js";
 import ConversationState from "./models/ConversationState.js";
 import { persistInboxMessage } from "./services/inboxPersistence.js";
-import { publishInboxMessage } from "./services/inboxPublisher.js";
+import { publishInboxMessageHTTP } from "./services/realtimePublisher.js";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -573,7 +573,7 @@ async function handleTextMessage(event, businessId) {
       });
 
       // 2️⃣ Realtime publish
-      await publishInboxMessage({
+      await publishInboxMessageHTTP({
         creatorId: creator._id.toString(),
         conversationId: conversation._id.toString(),
         message: {
