@@ -9,6 +9,8 @@ import RepliedComment from "./models/RepliedComment.js";
 import User from "./models/User.js";
 import ActionLock from "./models/ActionLock.js";
 import ConversationState from "./models/ConversationState.js";
+import { persistInboxMessage } from "./services/inboxPersistence.js";
+import { publishInboxMessage } from "./services/inboxPublisher.js";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -553,8 +555,44 @@ async function handleTextMessage(event, businessId) {
   }
 
   console.log("💬 Text message:", { senderId, text });
+
+  // 1️⃣ Resolve creator from business IG ID
+  const creator = await User.findOne({ igUserId: businessId })
+    .select("_id")
+    .lean();
+
+  if (creator) {
+    try {
+      const { conversation, message } = await persistInboxMessage({
+        creatorId: creator._id,
+        businessIgUserId: businessId,
+        senderIgUserId: senderId,
+        igMessageId: messageId,
+        text,
+        createdAt: new Date()
+      });
+
+      // 2️⃣ Realtime publish
+      await publishInboxMessage({
+        creatorId: creator._id.toString(),
+        conversationId: conversation._id.toString(),
+        message: {
+          _id: message._id,
+          sender: "them",
+          type: "text",
+          text: message.text,
+          createdAtPlatform: message.createdAtPlatform
+        }
+      });
+    } catch (e) {
+      console.error("❌ Inbox persistence failed:", e.message);
+    }
+  }
+
+
   
   const normalizedText = normalize(text);
+  
 
   // ========================================================================
   // PATH A: EXISTING FLOW (User is responding to a Comment->Private Reply)
