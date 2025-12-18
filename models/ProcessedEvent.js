@@ -17,5 +17,6 @@ ProcessedEventSchema.index({ eventId: 1 });
 const ProcessedEvent =
   mongoose.models.ActionLock ||
   mongoose.model("ProcessedEvent", ProcessedEventSchema, "processed_event");
+  //console
 
 export default ProcessedEvent;
