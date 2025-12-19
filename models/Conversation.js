@@ -72,6 +72,12 @@ ConversationSchema.index(
   { participantId: 1 }
 );
 
+ConversationSchema.index(
+  { creatorId: 1, platform: 1, igConversationId: 1 },
+  { unique: true }
+);
+
+
 const Conversation =
   mongoose.models.Conversation ||
   mongoose.model("Conversation", ConversationSchema, "conversations");
