@@ -18,21 +18,31 @@ export async function persistInboxMessage({
     { upsert: true, new: true }
   );
 
+  const igConversationId = `dm:${creatorId}:${senderIgUserId}`;
+
+
   // 2️⃣ Find or create conversation
-  const conversation = await Conversation.findOneAndUpdate(
-    {
+const conversation = await Conversation.findOneAndUpdate(
+  {
+    creatorId,
+    platform: "instagram",
+    igConversationId
+  },
+  {
+    $setOnInsert: {
       creatorId,
       platform: "instagram",
-      participantId: participant._id
-    },
-    {
-      creatorId,
-      platform: "instagram",
+      igConversationId,
       participantId: participant._id,
-      lastActivityAt: createdAt
+      unreadCount: 0,
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
+    $set: {
+      lastActivityAt: createdAt,
+    }
+  },
+  { upsert: true, new: true }
+);
+
 
   // 3️⃣ Upsert message (IDEMPOTENT)
   const message = await Message.findOneAndUpdate(

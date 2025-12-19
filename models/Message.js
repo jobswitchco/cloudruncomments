@@ -60,7 +60,6 @@ action: {
     mediaUrl: { type: String },
     mediaType: { type: String, enum: ["image", "video"] },
 
-    isRead: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
 
     createdAtPlatform: { type: Date },
