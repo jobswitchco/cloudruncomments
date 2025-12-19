@@ -18,7 +18,8 @@ export async function persistInboxMessage({
     { upsert: true, new: true }
   );
 
-  const igConversationId = `dm:${creatorId}:${senderIgUserId}`;
+  const igConversationId = `igdm:${businessIgUserId}:${senderIgUserId}`;
+
 
 
   // 2️⃣ Find or create conversation
