@@ -9,6 +9,8 @@ export async function publishInboxMessageHTTP({
   message
 }) {
   try {
+    console.log("Publishing to:", REALTIME_URL);
+
     await axios.post(REALTIME_URL, {
       creatorId,
       conversationId,
