@@ -15,7 +15,9 @@ export async function publishInboxMessageHTTP({
       creatorId,
       conversationId,
       message
-    }, { timeout: 3000 });
+    }, { timeout: 3000,
+      proxy: false
+     });
   } catch (e) {
     console.error("❌ realtime publish failed", e.message);
   }
