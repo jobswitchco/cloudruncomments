@@ -635,22 +635,27 @@ async function handleTextMessage(event, businessId) {
          2️⃣ Realtime publish (SAFE FOR ALL MESSAGE TYPES)
          ========================================================= */
 
-      await publishInboxMessageHTTP({
-        creatorId: creator._id.toString(),
-        conversationId: conversation._id.toString(),
-        message: {
-          _id: message._id,
-          sender: "them",
+    await publishInboxMessageHTTP({
+  creatorId: creator._id.toString(),
+  conversationId: conversation._id.toString(),
+  message: {
+    _id: message._id.toString(),
 
-          type: message.type,
-          text: message.text,
-          mediaUrl: message.mediaUrl,
-          mediaType: message.mediaType,
-          action: message.action,
+    sender: message.sender,           // ✅ FROM DB
+    senderType: message.senderType,   // ✅ OPTIONAL (future-proof)
+    senderTypeRef: message.senderTypeRef,
 
-          createdAtPlatform: message.createdAtPlatform,
-        },
-      });
+    type: message.type,
+    text: message.text,
+    mediaUrl: message.mediaUrl,
+    mediaType: message.mediaType,
+    action: message.action,
+
+    createdAtPlatform: message.createdAtPlatform,
+    isRead: message.isRead,
+  },
+});
+
     } catch (e) {
       console.error("❌ Inbox persistence failed:", e.message);
     }
