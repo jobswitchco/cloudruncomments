@@ -8,10 +8,16 @@ export async function persistInboxMessage({
   businessIgUserId,
   senderIgUserId,
   igMessageId,
+
+  type,
   text,
+  mediaUrl,
+  mediaType,
+  action,
+
   createdAt
 }) {
-  // 1️⃣ Ensure participant exists
+  // 1️⃣ Ensure participant
   const participant = await Participant.findOneAndUpdate(
     { platform: "instagram", igUserId: senderIgUserId },
     { $setOnInsert: { platform: "instagram", igUserId: senderIgUserId } },
@@ -20,31 +26,24 @@ export async function persistInboxMessage({
 
   const igConversationId = `igdm:${businessIgUserId}:${senderIgUserId}`;
 
-
-
   // 2️⃣ Find or create conversation
-const conversation = await Conversation.findOneAndUpdate(
-  {
-    creatorId,
-    platform: "instagram",
-    igConversationId
-  },
-  {
-    $setOnInsert: {
-      creatorId,
-      platform: "instagram",
-      igConversationId,
-      participantId: participant._id,
-      unreadCount: 0,
+  const conversation = await Conversation.findOneAndUpdate(
+    { creatorId, platform: "instagram", igConversationId },
+    {
+      $setOnInsert: {
+        creatorId,
+        platform: "instagram",
+        igConversationId,
+        participantId: participant._id,
+        unreadCount: 0,
+      },
+      $set: {
+        lastActivityAt: createdAt,
+        lastSyncedAt: new Date(),
+      }
     },
-    $set: {
-      lastActivityAt: createdAt,
-       lastSyncedAt: new Date(),
-    }
-  },
-  { upsert: true, new: true }
-);
-
+    { upsert: true, new: true }
+  );
 
   // 3️⃣ Upsert message (IDEMPOTENT)
   const message = await Message.findOneAndUpdate(
@@ -53,11 +52,17 @@ const conversation = await Conversation.findOneAndUpdate(
       conversationId: conversation._id,
       platform: "instagram",
       igMessageId,
+
       sender: "them",
       senderType: "participant",
       senderId: participant._id,
+
+      type,
       text,
-      type: "text",
+      mediaUrl,
+      mediaType,
+      action,
+
       createdAtPlatform: createdAt,
       isRead: false,
       isDeleted: false
@@ -65,25 +70,26 @@ const conversation = await Conversation.findOneAndUpdate(
     { upsert: true, new: true }
   );
 
-  const wasInserted = message.lastErrorObject?.upserted;
-
-  // 4️⃣ Update conversation snapshot
-  if (wasInserted) {
-  await Conversation.updateOne(
-    { _id: conversation._id },
-    {
-      lastMessage: {
-        text,
-        sender: "them",
-        type: "text",
-        timestamp: createdAt
-      },
-      lastActivityAt: createdAt,
-       lastSyncedAt: new Date(),
-      $inc: { unreadCount: 1 }
-    }
-  );
-}
+  // 4️⃣ Update conversation snapshot ONLY on insert
+  if (message.wasNew || message.lastErrorObject?.upserted) {
+    await Conversation.updateOne(
+      { _id: conversation._id },
+      {
+        $set: {
+          lastMessage: {
+            text,
+            type,
+            sender: "them",
+            timestamp: createdAt
+          },
+          lastActivityAt: createdAt,
+          lastSyncedAt: new Date()
+        },
+        $inc: { unreadCount: 1 }
+      }
+    );
+  }
 
   return { conversation, message };
 }
+

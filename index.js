@@ -546,17 +546,69 @@ async function startDirectFlow({
 
 async function handleTextMessage(event, businessId) {
   const senderId = event.sender?.id;
-  const text = event.message?.text;
   const messageId = event.message?.mid; // Message ID from Meta
-  
+
   // --- NEW: IGNORE ECHOES ---
   if (event.message?.is_echo) {
-      return; 
+    return;
   }
 
-  console.log("💬 Text message:", { senderId, text });
+  // 🔥 FIX 1: Use Meta timestamp, NOT server time
+  const createdAtPlatform = event.timestamp
+    ? new Date(event.timestamp)
+    : new Date();
 
-  // 1️⃣ Resolve creator from business IG ID
+  /* =========================================================
+     🔥 FIX 2: NORMALIZE MESSAGE (TEXT / REEL / ATTACHMENT)
+     ========================================================= */
+
+  let type = "text";
+  let text = event.message?.text || null;
+  let mediaUrl = null;
+  let mediaType = null;
+  let action = null;
+
+  const attachment = event.message?.attachments?.[0];
+
+  // Image
+  if (attachment?.type === "image") {
+    type = "image";
+    mediaType = "image";
+    mediaUrl = attachment.payload?.url || null;
+  }
+  // Video
+  else if (attachment?.type === "video") {
+    type = "video";
+    mediaType = "video";
+    mediaUrl = attachment.payload?.url || null;
+  }
+  // Unsupported (reel / post / story share)
+  else if (event.message?.is_unsupported) {
+    type = "system";
+    text = "Shared a reel";
+    action = {
+      label: "View on Instagram",
+      url: "https://www.instagram.com/direct/inbox/",
+    };
+  }
+  // Any other attachment without text
+  else if (!text) {
+    type = "system";
+    text = "Shared an attachment";
+  }
+
+  console.log("💬 Incoming message:", {
+    senderId,
+    type,
+    text,
+    mediaUrl,
+    createdAtPlatform,
+  });
+
+  /* =========================================================
+     1️⃣ Resolve creator from business IG ID
+     ========================================================= */
+
   const creator = await User.findOne({ igUserId: businessId })
     .select("_id")
     .lean();
@@ -568,31 +620,47 @@ async function handleTextMessage(event, businessId) {
         businessIgUserId: businessId,
         senderIgUserId: senderId,
         igMessageId: messageId,
+
+        // 🔥 pass normalized fields
+        type,
         text,
-        createdAt: new Date()
+        mediaUrl,
+        mediaType,
+        action,
+
+        createdAt: createdAtPlatform,
       });
 
-      // 2️⃣ Realtime publish
+      /* =========================================================
+         2️⃣ Realtime publish (SAFE FOR ALL MESSAGE TYPES)
+         ========================================================= */
+
       await publishInboxMessageHTTP({
         creatorId: creator._id.toString(),
         conversationId: conversation._id.toString(),
         message: {
           _id: message._id,
           sender: "them",
-          type: "text",
+
+          type: message.type,
           text: message.text,
-          createdAtPlatform: message.createdAtPlatform
-        }
+          mediaUrl: message.mediaUrl,
+          mediaType: message.mediaType,
+          action: message.action,
+
+          createdAtPlatform: message.createdAtPlatform,
+        },
       });
     } catch (e) {
       console.error("❌ Inbox persistence failed:", e.message);
     }
   }
 
+  /* =========================================================
+     Existing logic BELOW — UNCHANGED
+     ========================================================= */
 
-  
-  const normalizedText = normalize(text);
-  
+  const normalizedText = normalize(text || "");
 
   // ========================================================================
   // PATH A: EXISTING FLOW (User is responding to a Comment->Private Reply)
@@ -602,154 +670,115 @@ async function handleTextMessage(event, businessId) {
     status: "active",
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
-  
+
   if (conversation) {
+    if (conversation.currentFlowId === "awaiting_user_response") {
+      console.log("✅ User responded to initial message, 24hr window now open");
 
-  if (conversation.currentFlowId === "awaiting_user_response") {
-        console.log("✅ User responded to initial message, 24hr window now open");
-        
-        const creds = await ensureFreshPageTokenForUser(conversation.userId);
-        const accessToken = creds.fbPageAccessToken;
-        const fbPageId = creds.fbPageId;
-        
-        // Use initial node
-        const initialNode = conversation.flowConfig.initial || conversation.flowConfig[0];
-        
-        try {
-          // Send quick replies (Standard Messaging)
-          await sendFlowMessage({
-            recipient: { id: String(senderId) },
-            flowNode: initialNode,
-            pageAccessToken: accessToken,
-            fbPageId: fbPageId,
-          });
-          
-          conversation.currentFlowId = String(initialNode.id || "initial");
-          conversation.addHistory({
-            flowId: "initial_response",
-            flowName: "USER_RESPONDED_TO_DM",
-            messageSent: initialNode.message,
-            userReply: text,
-          });
-          await conversation.save();
-          
-          console.log("✅ Quick replies sent after user text response");
-        } catch (err) {
-          console.error("❌ Failed to send quick replies:", err.message);
-          conversation.markError(err);
-          await conversation.save();
-        }
-    } 
+      const creds = await ensureFreshPageTokenForUser(conversation.userId);
+      const accessToken = creds.fbPageAccessToken;
+      const fbPageId = creds.fbPageId;
 
-    // Scenario A1: User responded to the "Private Reply" (handshake)
-    else if (conversation.currentFlowId === "awaiting_user_response") {
-        console.log("✅ User responded to initial message, 24hr window now open");
-        
-        const creds = await ensureFreshPageTokenForUser(conversation.userId);
-        const accessToken = creds.fbPageAccessToken;
-        const fbPageId = creds.fbPageId;
-        
-        // Use initial node
-        const initialNode = conversation.flowConfig.initial || conversation.flowConfig[0];
-        
-        try {
-          // Send quick replies (Standard Messaging)
-          await sendFlowMessage({
-            recipient: { id: String(senderId) },
-            flowNode: initialNode,
-            pageAccessToken: accessToken,
-            fbPageId: fbPageId,
-          });
-          
-          conversation.currentFlowId = String(initialNode.id || "initial");
-          conversation.addHistory({
-            flowId: "initial_response",
-            flowName: "USER_RESPONDED_TO_DM",
-            messageSent: initialNode.message,
-            userReply: text,
-          });
-          await conversation.save();
-          
-          console.log("✅ Quick replies sent after user text response");
-        } catch (err) {
-          console.error("❌ Failed to send quick replies:", err.message);
-          conversation.markError(err);
-          await conversation.save();
-        }
-    } 
-    
+      const initialNode =
+        conversation.flowConfig.initial || conversation.flowConfig[0];
+
+      try {
+        await sendFlowMessage({
+          recipient: { id: String(senderId) },
+          flowNode: initialNode,
+          pageAccessToken: accessToken,
+          fbPageId: fbPageId,
+        });
+
+        conversation.currentFlowId = String(initialNode.id || "initial");
+        conversation.addHistory({
+          flowId: "initial_response",
+          flowName: "USER_RESPONDED_TO_DM",
+          messageSent: initialNode.message,
+          userReply: text,
+        });
+        await conversation.save();
+
+        console.log("✅ Quick replies sent after user text response");
+      } catch (err) {
+        console.error("❌ Failed to send quick replies:", err.message);
+        conversation.markError(err);
+        await conversation.save();
+      }
+    }
   }
 
   // ========================================================================
   // PATH B: NEW TRIGGER (User sends a DM Keyword like "Coach", "Link")
   // ========================================================================
-else {
-      console.log(`🔍 No active conversation. Checking keywords for Business ID: ${businessId}`);
+  else {
+    console.log(
+      `🔍 No active conversation. Checking keywords for Business ID: ${businessId}`
+    );
 
-      if (!businessId) {
-          console.warn("⚠️ Cannot process DM trigger: Missing businessId");
-          return;
-      }
+    if (!businessId) {
+      console.warn("⚠️ Cannot process DM trigger: Missing businessId");
+      return;
+    }
 
-      // 1. Try Direct Lookup
-      let user = await User.findOne({ igUserId: businessId }).lean();
-      const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, 'i');
+    let user = await User.findOne({ igUserId: businessId }).lean();
+    const keywordRegex = new RegExp(
+      `^${escapeRegex(normalizedText)}$`,
+      "i"
+    );
 
-      // 2. Find Automation
-      const automation = await Automation.findOne({
-        userId: user._id,
-        postType: 'autodm',
-        platform: "instagram",
-        status: "active",
-        keywords: { $in: [keywordRegex] } 
-      }).lean();
+    const automation = await Automation.findOne({
+      userId: user._id,
+      postType: "autodm",
+      platform: "instagram",
+      status: "active",
+      keywords: { $in: [keywordRegex] },
+    }).lean();
 
-      if (!automation) {
-        console.log(`ℹ️ No automation found for keyword: "${normalizedText}"`);
-        return;
-      }
+    if (!automation) {
+      console.log(`ℹ️ No automation found for keyword: "${normalizedText}"`);
+      return;
+    }
 
-      console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
+    console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
 
-      // 3. Deduplication (ActionLock)
-      try {
-         await ActionLock.create({
-           automationId: automation._id,
-           postType: 'autodm',
-           postId:'automDM12345',
-           igUserId: senderId,
-           commentId: messageId, 
-           channel: "private",
-           state: "sent",
-           reservedAt: new Date(),
-           sentAt: new Date()
-         });
-      } catch (err) {
-        if (err.code === 11000) {
-          console.log("⚠️ Duplicate DM webhook event detected. Skipping.");
-          return;
-        }
-        console.error("ActionLock error", err);
-      }
-
-      // 4. Get Tokens 
-      const creds = await ensureFreshPageTokenForUser(user._id);
-      
-      if (!creds.fbPageAccessToken) {
-        console.error("❌ Could not get access token for user");
-        return;
-      }
-
-      // 5. Start Direct Flow 
-      await startDirectFlow({
-        automation,
+    try {
+      await ActionLock.create({
+        automationId: automation._id,
+        postType: "autodm",
+        postId: "automDM12345",
         igUserId: senderId,
-        pageAccessToken: creds.fbPageAccessToken,
-        fbPageId: creds.fbPageId || businessId, 
-        messageId
+        commentId: messageId,
+        channel: "private",
+        state: "sent",
+        reservedAt: new Date(),
+        sentAt: new Date(),
       });
+    } catch (err) {
+      if (err.code === 11000) {
+        console.log("⚠️ Duplicate DM webhook event detected. Skipping.");
+        return;
+      }
+      console.error("ActionLock error", err);
+    }
+
+    const creds = await ensureFreshPageTokenForUser(user._id);
+
+    if (!creds.fbPageAccessToken) {
+      console.error("❌ Could not get access token for user");
+      return;
+    }
+
+    await startDirectFlow({
+      automation,
+      igUserId: senderId,
+      pageAccessToken: creds.fbPageAccessToken,
+      fbPageId: creds.fbPageId || businessId,
+      messageId,
+    });
   }
 }
+
 
 // ========== PUB/SUB ENDPOINT: COMMENTS ==========
 app.post("/pubsub", async (req, res) => {
