@@ -39,6 +39,7 @@ const conversation = await Conversation.findOneAndUpdate(
     },
     $set: {
       lastActivityAt: createdAt,
+       lastSyncedAt: new Date(),
     }
   },
   { upsert: true, new: true }
@@ -64,7 +65,10 @@ const conversation = await Conversation.findOneAndUpdate(
     { upsert: true, new: true }
   );
 
+  const wasInserted = message.lastErrorObject?.upserted;
+
   // 4️⃣ Update conversation snapshot
+  if (wasInserted) {
   await Conversation.updateOne(
     { _id: conversation._id },
     {
@@ -75,9 +79,11 @@ const conversation = await Conversation.findOneAndUpdate(
         timestamp: createdAt
       },
       lastActivityAt: createdAt,
+       lastSyncedAt: new Date(),
       $inc: { unreadCount: 1 }
     }
   );
+}
 
   return { conversation, message };
 }
