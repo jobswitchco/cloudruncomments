@@ -44,61 +44,73 @@ export async function persistInboxMessage({
     { upsert: true, new: true }
   );
 
-  // 3️⃣ Idempotency
-  const existing = await Message.findOne(
-    { igMessageId },
-    { _id: 1 }
-  ).lean();
+  /* =====================================================
+     🔥 CORRECT SENDER RESOLUTION (NO HARD CODING)
+     ===================================================== */
 
-  let message = existing;
+  const isFromMe = senderIgUserId === businessIgUserId;
 
-  if (!existing) {
-    message = await Message.create({
-      conversationId: conversation._id,
-      platform: "instagram",
-      igMessageId,
+  const sender = isFromMe ? "me" : "them";
+  const senderType = isFromMe ? "creator" : "participant";
+  const senderTypeRef = isFromMe ? "users" : "participants";
+  const senderId = isFromMe ? creatorId : participant._id;
 
-      sender: "them",
-      senderType: "participant",
-      senderId: participant._id,
-
-      type,
-      text,
-      mediaUrl,
-      mediaType,
-      action,
-
-      createdAtPlatform: createdAt,
-      isRead: false,
-      isDeleted: false
-    });
-
-    // 🔥 GUARDED snapshot update
-    await Conversation.updateOne(
-      {
-        _id: conversation._id,
-        $or: [
-          { lastActivityAt: { $exists: false } },
-          { lastActivityAt: { $lt: createdAt } }
-        ]
-      },
-      {
-        $set: {
-          lastMessage: {
-            text,
-            type,
-            sender: "them",
-            timestamp: createdAt
-          },
-          lastActivityAt: createdAt,
-          lastSyncedAt: new Date()
-        },
-        $inc: { unreadCount: 1 }
-      }
-    );
+  // 3️⃣ Create message (IDEMPOTENT)
+  const existing = await Message.findOne({ igMessageId }).lean();
+  if (existing) {
+    return { conversation, message: existing };
   }
+
+  const message = await Message.create({
+    conversationId: conversation._id,
+    platform: "instagram",
+    igMessageId,
+
+    sender,
+    senderType,
+    senderTypeRef,
+    senderId,
+
+    type,
+    text,
+    mediaUrl,
+    mediaType,
+    action,
+
+    createdAtPlatform: createdAt,
+    isRead: isFromMe,
+    isDeleted: false
+  });
+
+  /* =====================================================
+     🔥 UPDATE CONVERSATION SNAPSHOT (GUARDED)
+     ===================================================== */
+
+  await Conversation.updateOne(
+    {
+      _id: conversation._id,
+      $or: [
+        { lastActivityAt: { $exists: false } },
+        { lastActivityAt: { $lt: createdAt } }
+      ]
+    },
+    {
+      $set: {
+        lastMessage: {
+          text,
+          type,
+          sender,
+          timestamp: createdAt
+        },
+        lastActivityAt: createdAt,
+        lastSyncedAt: new Date()
+      },
+      ...(sender === "them" ? { $inc: { unreadCount: 1 } } : {})
+    }
+  );
 
   return { conversation, message };
 }
+
 
 
