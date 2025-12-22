@@ -38,17 +38,22 @@ export async function persistInboxMessage({
         unreadCount: 0,
       },
       $set: {
-        lastActivityAt: createdAt,
         lastSyncedAt: new Date(),
       }
     },
     { upsert: true, new: true }
   );
 
-  // 3️⃣ Upsert message (IDEMPOTENT)
-  const message = await Message.findOneAndUpdate(
+  // 3️⃣ Idempotency
+  const existing = await Message.findOne(
     { igMessageId },
-    {
+    { _id: 1 }
+  ).lean();
+
+  let message = existing;
+
+  if (!existing) {
+    message = await Message.create({
       conversationId: conversation._id,
       platform: "instagram",
       igMessageId,
@@ -66,14 +71,17 @@ export async function persistInboxMessage({
       createdAtPlatform: createdAt,
       isRead: false,
       isDeleted: false
-    },
-    { upsert: true, new: true }
-  );
+    });
 
-  // 4️⃣ Update conversation snapshot ONLY on insert
-  if (message.wasNew || message.lastErrorObject?.upserted) {
+    // 🔥 GUARDED snapshot update
     await Conversation.updateOne(
-      { _id: conversation._id },
+      {
+        _id: conversation._id,
+        $or: [
+          { lastActivityAt: { $exists: false } },
+          { lastActivityAt: { $lt: createdAt } }
+        ]
+      },
       {
         $set: {
           lastMessage: {
@@ -92,4 +100,5 @@ export async function persistInboxMessage({
 
   return { conversation, message };
 }
+
 
