@@ -6,7 +6,8 @@ const REALTIME_URL = "http://34.180.49.15:3000";
 export async function publishInboxMessageHTTP({
   creatorId,
   conversationId,
-  message
+  message,
+  conversation
 }) {
   try {
     console.log("Publishing to:", REALTIME_URL);
@@ -14,7 +15,8 @@ export async function publishInboxMessageHTTP({
     await axios.post(`${REALTIME_URL}/publish/inbox`, {
       creatorId,
       conversationId,
-      message
+      message,
+      conversation
     }, { timeout: 3000,
       proxy: false
      });

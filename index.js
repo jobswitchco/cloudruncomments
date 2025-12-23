@@ -635,14 +635,16 @@ async function handleTextMessage(event, businessId) {
          2️⃣ Realtime publish (SAFE FOR ALL MESSAGE TYPES)
          ========================================================= */
 
-    await publishInboxMessageHTTP({
+await publishInboxMessageHTTP({
   creatorId: creator._id.toString(),
   conversationId: conversation._id.toString(),
+
+  // 1️⃣ Message payload (unchanged)
   message: {
     _id: message._id.toString(),
 
-    sender: message.sender,           // ✅ FROM DB
-    senderType: message.senderType,   // ✅ OPTIONAL (future-proof)
+    sender: message.sender,
+    senderType: message.senderType,
     senderTypeRef: message.senderTypeRef,
 
     type: message.type,
@@ -654,7 +656,15 @@ async function handleTextMessage(event, businessId) {
     createdAtPlatform: message.createdAtPlatform,
     isRead: message.isRead,
   },
+
+  // 2️⃣ 🔥 AUTHORITATIVE CONVERSATION SNAPSHOT
+  conversation: {
+    unreadCount: conversation.unreadCount,
+    lastMessage: conversation.lastMessage,
+    lastActivityAt: conversation.lastActivityAt,
+  },
 });
+
 
   await publishConversationUpdate({
         creatorId: creator._id.toString(),
