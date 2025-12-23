@@ -10,7 +10,7 @@ import User from "./models/User.js";
 import ActionLock from "./models/ActionLock.js";
 import ConversationState from "./models/ConversationState.js";
 import { persistInboxMessage } from "./services/inboxPersistence.js";
-import { publishInboxMessageHTTP } from "./services/realtimePublisher.js";
+import { publishInboxMessageHTTP, publishConversationUpdate } from "./services/realtimePublisher.js";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -655,6 +655,16 @@ async function handleTextMessage(event, businessId) {
     isRead: message.isRead,
   },
 });
+
+  await publishConversationUpdate({
+        creatorId: creator._id.toString(),
+        conversationId: conversation._id.toString(),
+        update: {
+          lastMessage: conversation.lastMessage,
+          lastActivityAt: conversation.lastActivityAt,
+          unreadCount: conversation.unreadCount,
+        }
+      });
 
     } catch (e) {
       console.error("❌ Inbox persistence failed:", e.message);

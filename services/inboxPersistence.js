@@ -86,7 +86,7 @@ export async function persistInboxMessage({
      🔥 UPDATE CONVERSATION SNAPSHOT (GUARDED)
      ===================================================== */
 
-  await Conversation.updateOne(
+  const updatedConversation = await Conversation.findOneAndUpdate(
     {
       _id: conversation._id,
       $or: [
@@ -106,10 +106,14 @@ export async function persistInboxMessage({
         lastSyncedAt: new Date()
       },
       ...(sender === "them" ? { $inc: { unreadCount: 1 } } : {})
-    }
+    },
+    { new: true } // 🔥 Return updated document
   );
 
-  return { conversation, message };
+  return { 
+    conversation: updatedConversation || conversation, 
+    message 
+  };
 }
 
 
