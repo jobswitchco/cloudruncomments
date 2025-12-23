@@ -1,7 +1,7 @@
 // services/realtimePublisher.js
 import axios from "axios";
 
-const REALTIME_URL = "http://34.180.49.15:3000/publish/inbox";
+const REALTIME_URL = "http://34.180.49.15:3000";
 
 export async function publishInboxMessageHTTP({
   creatorId,
@@ -11,7 +11,7 @@ export async function publishInboxMessageHTTP({
   try {
     console.log("Publishing to:", REALTIME_URL);
 
-    await axios.post(REALTIME_URL, {
+    await axios.post(`${REALTIME_URL}/publish/inbox`, {
       creatorId,
       conversationId,
       message
