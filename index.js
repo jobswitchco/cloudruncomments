@@ -662,6 +662,7 @@ await publishInboxMessageHTTP({
     unreadCount: conversation.unreadCount,
     lastMessage: conversation.lastMessage,
     lastActivityAt: conversation.lastActivityAt,
+    lastParticipantMessageAt: conversation.lastParticipantMessageAt
   },
 });
 
@@ -673,6 +674,8 @@ await publishInboxMessageHTTP({
           lastMessage: conversation.lastMessage,
           lastActivityAt: conversation.lastActivityAt,
           unreadCount: conversation.unreadCount,
+    lastParticipantMessageAt: conversation.lastParticipantMessageAt
+
         }
       });
 
