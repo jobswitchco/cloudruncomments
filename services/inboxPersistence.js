@@ -86,29 +86,37 @@ export async function persistInboxMessage({
      🔥 UPDATE CONVERSATION SNAPSHOT (GUARDED)
      ===================================================== */
 
-  const updatedConversation = await Conversation.findOneAndUpdate(
-    {
-      _id: conversation._id,
-      $or: [
-        { lastActivityAt: { $exists: false } },
-        { lastActivityAt: { $lt: createdAt } }
-      ]
-    },
-    {
-      $set: {
-        lastMessage: {
-          text,
-          type,
-          sender,
-          timestamp: createdAt
-        },
-        lastActivityAt: createdAt,
-        lastSyncedAt: new Date()
-      },
-      ...(sender === "them" ? { $inc: { unreadCount: 1 } } : {})
-    },
-    { new: true } // 🔥 Return updated document
-  );
+ const update = {
+  lastMessage: {
+    text,
+    type,
+    sender,
+    timestamp: createdAt
+  },
+  lastActivityAt: createdAt,
+  lastSyncedAt: new Date()
+};
+
+// 🔥 THIS IS THE KEY LINE
+if (sender === "them") {
+  update.lastParticipantMessageAt = createdAt;
+}
+
+const updatedConversation = await Conversation.findOneAndUpdate(
+  {
+    _id: conversation._id,
+    $or: [
+      { lastActivityAt: { $exists: false } },
+      { lastActivityAt: { $lt: createdAt } }
+    ]
+  },
+  {
+    $set: update,
+    ...(sender === "them" ? { $inc: { unreadCount: 1 } } : {})
+  },
+  { new: true }
+);
+
 
   return { 
     conversation: updatedConversation || conversation, 

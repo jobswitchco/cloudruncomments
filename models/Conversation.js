@@ -45,6 +45,10 @@ const ConversationSchema = new Schema(
     unreadCount: { type: Number, default: 0 },
     lastSyncedAt: Date,
     lastMetaCursor: String,
+    lastParticipantMessageAt: {
+  type: Date,
+  index: true
+},
 
 
     // Sorting
