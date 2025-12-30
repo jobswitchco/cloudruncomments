@@ -11,6 +11,7 @@ import ActionLock from "./models/ActionLock.js";
 import ConversationState from "./models/ConversationState.js";
 import { persistInboxMessage } from "./services/inboxPersistence.js";
 import { publishInboxMessageHTTP, publishConversationUpdate } from "./services/realtimePublisher.js";
+import levenshtein from "fast-levenshtein";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -101,24 +102,19 @@ function keywordMatch(normalizedText, keywords = []) {
   return keywords.some((kw) => {
     const k = normalizeComment(kw);
 
-    // 1️⃣ Exact word
+    // 1️⃣ Exact match
     if (tokens.includes(k)) return true;
 
     // 2️⃣ Substring match
     if (normalizedText.includes(k)) return true;
 
-    // 3️⃣ Fuzzy: pricee, prce (edit distance ≤ 1)
+    // 3️⃣ Levenshtein fuzzy match
     return tokens.some((token) => {
-      if (Math.abs(token.length - k.length) > 1) return false;
-      let diff = 0;
-      for (let i = 0; i < Math.min(token.length, k.length); i++) {
-        if (token[i] !== k[i]) diff++;
-        if (diff > 1) return false;
-      }
-      return true;
+      return levenshtein.get(token, k) <= 1;
     });
   });
 }
+
 
 
 
