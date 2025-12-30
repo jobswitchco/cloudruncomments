@@ -988,55 +988,55 @@ console.log("🎯 Comment matched automation:", {
 
 // =============== PUBLIC REPLY PREV CODE ================
 
-//  if (auto.hasReply && replyCandidates.length > 0) {
+ if (auto.hasReply && replyCandidates.length > 0) {
       
-//       // 3. Select a random reply
-//       const replyTextToSend = replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
+      // 3. Select a random reply
+      const replyTextToSend = replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
 
-//       const { proceed } = await reserveAction({
-//         automationId: auto._id,
-//         postId: c.mediaId,
-//         igUserId: c.fromUserId,
-//         commentText: c.text,
-//         commentId: c.commentId,
-//         channel: "public",
-//       });
+      const { proceed } = await reserveAction({
+        automationId: auto._id,
+        postId: c.mediaId,
+        igUserId: c.fromUserId,
+        commentText: c.text,
+        commentId: c.commentId,
+        channel: "public",
+      });
 
-//       if (proceed) {
-//         try {
-//           // 4. Send the selected random text
-//           await replyToCommentPublic(c.commentId, replyTextToSend, accessToken);
-//           console.log(`✅ Public reply sent (${replyTextToSend}):`, c.commentId);
+      if (proceed) {
+        try {
+          // 4. Send the selected random text
+          await replyToCommentPublic(c.commentId, replyTextToSend, accessToken);
+          console.log(`✅ Public reply sent (${replyTextToSend}):`, c.commentId);
 
-//           await finalizeAction({
-//             automationId: auto._id,
-//             postId: c.mediaId,
-//             igUserId: c.fromUserId,
-//             commentText: c.text,
-//             commentId: c.commentId,
-//             channel: "public",
-//             ok: true,
-//           });
-//         } catch (err) {
-//           console.error("❌ Public reply failed:", err.message);
+          await finalizeAction({
+            automationId: auto._id,
+            postId: c.mediaId,
+            igUserId: c.fromUserId,
+            commentText: c.text,
+            commentId: c.commentId,
+            channel: "public",
+            ok: true,
+          });
+        } catch (err) {
+          console.error("❌ Public reply failed:", err.message);
           
-//           await finalizeAction({
-//             automationId: auto._id,
-//             postId: c.mediaId,
-//             igUserId: c.fromUserId,
-//             commentText: c.text,
-//             commentId: c.commentId,
-//             channel: "public",
-//             ok: false,
-//             error: { message: err.message },
-//           });
+          await finalizeAction({
+            automationId: auto._id,
+            postId: c.mediaId,
+            igUserId: c.fromUserId,
+            commentText: c.text,
+            commentId: c.commentId,
+            channel: "public",
+            ok: false,
+            error: { message: err.message },
+          });
           
-//           continue; // Skip private DM if public reply failed
-//         }
-//       } else {
-//         console.log("ℹ️ Public reply already sent for:", c.commentId);
-//       }
-//     }
+          continue; // Skip private DM if public reply failed
+        }
+      } else {
+        console.log("ℹ️ Public reply already sent for:", c.commentId);
+      }
+    }
 
 
   // ✅ Compute human-like delay
@@ -1045,198 +1045,198 @@ console.log("🎯 Comment matched automation:", {
 
 
 // ========== PUBLIC REPLY (QUEUE ONLY) ==========
-if (auto.hasReply && replyCandidates.length > 0) {
+// if (auto.hasReply && replyCandidates.length > 0) {
 
-  const replyTextToSend =
-    replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
+//   const replyTextToSend =
+//     replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
 
-  const { proceed, lockId } = await reserveAction({
-    automationId: auto._id,
-    postId: c.mediaId,
-    igUserId: c.fromUserId,
-    commentText: c.text,
-    commentId: c.commentId,
-    channel: "public",
-  });
+//   const { proceed, lockId } = await reserveAction({
+//     automationId: auto._id,
+//     postId: c.mediaId,
+//     igUserId: c.fromUserId,
+//     commentText: c.text,
+//     commentId: c.commentId,
+//     channel: "public",
+//   });
 
-  if (!proceed) {
-    console.log("ℹ️ Public reply already reserved:", c.commentId);
-    continue;
-  }
-
-
-
-  // ✅ Create a QUEUED action (DB or Redis reference)
-
-  const res = await ActionLock.updateOne(
-    { _id: lockId, state: "reserved" },
-    {
-      $set: {
-        state: "queued",
-        scheduledAt: new Date(scheduledAt),
-         payload: {
-          replyText: replyTextToSend,
-          pageId: fbPageId,
-          pageUserId: auto.userId,
-        },
-      },
-    }
-  );
-
-  if (res.modifiedCount !== 1) {
-  console.log("ℹ️ ActionLock not queued (already processed)");
-  continue;
-}
-
-  // 🔥 Schedule Agenda job (PUBLIC)
-  await agenda.schedule(
-    new Date(scheduledAt),
-    "process_action_lock",
-    { actionLockId: lockId }
-  );
+//   if (!proceed) {
+//     console.log("ℹ️ Public reply already reserved:", c.commentId);
+//     continue;
+//   }
 
 
-  console.log("🕒 Public reply queued:", {
-    commentId: c.commentId,
-    scheduledAt: new Date(scheduledAt).toISOString(),
-  });
-}
+
+//   // ✅ Create a QUEUED action (DB or Redis reference)
+
+//   const res = await ActionLock.updateOne(
+//     { _id: lockId, state: "reserved" },
+//     {
+//       $set: {
+//         state: "queued",
+//         scheduledAt: new Date(scheduledAt),
+//          payload: {
+//           replyText: replyTextToSend,
+//           pageId: fbPageId,
+//           pageUserId: auto.userId,
+//         },
+//       },
+//     }
+//   );
+
+//   if (res.modifiedCount !== 1) {
+//   console.log("ℹ️ ActionLock not queued (already processed)");
+//   continue;
+// }
+
+//   // 🔥 Schedule Agenda job (PUBLIC)
+//   await agenda.schedule(
+//     new Date(scheduledAt),
+//     "process_action_lock",
+//     { actionLockId: lockId }
+//   );
+
+
+//   console.log("🕒 Public reply queued:", {
+//     commentId: c.commentId,
+//     scheduledAt: new Date(scheduledAt).toISOString(),
+//   });
+// }
 
 
     // ========== PRIVATE DM PREV==========
 
-    // if (auto.dmMessage && auto.buttonText) {
-    //   const { proceed: canSendPrivate } = await reserveAction({
-    //     automationId: auto._id,
-    //     postId: c.mediaId,
-    //     igUserId: c.fromUserId,
-    //     commentText: c.text,
-    //     commentId: c.commentId,
-    //     channel: "private",
-    //   });
+    if (auto.dmMessage && auto.buttonText) {
+      const { proceed: canSendPrivate } = await reserveAction({
+        automationId: auto._id,
+        postId: c.mediaId,
+        igUserId: c.fromUserId,
+        commentText: c.text,
+        commentId: c.commentId,
+        channel: "private",
+      });
 
-    //   if (canSendPrivate) {
-    //     try {
-    //       // Send initial DM
-    //       await sendInitialDM({
-    //         fbPageId,
-    //         commentId: c.commentId,
-    //         automation: auto,
-    //         pageAccessToken: accessToken,
-    //         igUserId: c.fromUserId,
-    //         igUsername: c.fromUsername,
-    //       });
+      if (canSendPrivate) {
+        try {
+          // Send initial DM
+          await sendInitialDM({
+            fbPageId,
+            commentId: c.commentId,
+            automation: auto,
+            pageAccessToken: accessToken,
+            igUserId: c.fromUserId,
+            igUsername: c.fromUsername,
+          });
 
-    //       // Fetch user details
-    //       const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
-    //       const { data: userDetails } = await axios.get(userDetailsUrl, {
-    //         params: {
-    //           access_token: accessToken,
-    //           fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
-    //         },
-    //       });
+          // Fetch user details
+          const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
+          const { data: userDetails } = await axios.get(userDetailsUrl, {
+            params: {
+              access_token: accessToken,
+              fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
+            },
+          });
 
-    //       // Save to RepliedComment
-    //       await RepliedComment.create({
-    //         commentId: c.commentId,
-    //         postId: c.mediaId,
-    //         automationId: auto._id,
-    //         userId: auto.userId,
-    //         channel: "private",
-    //         state: "sent",
-    //         text: c.text,
-    //         sentMessage: auto.dmMessage,
-    //         status: "pending",
-    //         igUserId: userDetails.id,
-    //         username: userDetails.username,
-    //         profilePic: userDetails.profile_pic,
-    //         followsBusiness: userDetails.is_user_follow_business,
-    //         businessFollowsUser: userDetails.is_business_follow_user,
-    //       });
+          // Save to RepliedComment
+          await RepliedComment.create({
+            commentId: c.commentId,
+            postId: c.mediaId,
+            automationId: auto._id,
+            userId: auto.userId,
+            channel: "private",
+            state: "sent",
+            text: c.text,
+            sentMessage: auto.dmMessage,
+            status: "pending",
+            igUserId: userDetails.id,
+            username: userDetails.username,
+            profilePic: userDetails.profile_pic,
+            followsBusiness: userDetails.is_user_follow_business,
+            businessFollowsUser: userDetails.is_business_follow_user,
+          });
 
-    //       await finalizeAction({
-    //         automationId: auto._id,
-    //         postId: c.mediaId,
-    //         igUserId: c.fromUserId,
-    //         commentText: c.text,
-    //         commentId: c.commentId,
-    //         channel: "private",
-    //         ok: true,
-    //       });
+          await finalizeAction({
+            automationId: auto._id,
+            postId: c.mediaId,
+            igUserId: c.fromUserId,
+            commentText: c.text,
+            commentId: c.commentId,
+            channel: "private",
+            ok: true,
+          });
 
-    //       console.log("✅ Private DM sent:", c.commentId);
+          console.log("✅ Private DM sent:", c.commentId);
           
-    //     } catch (err) {
-    //       console.error("❌ Private DM failed:", err.message);
+        } catch (err) {
+          console.error("❌ Private DM failed:", err.message);
           
-    //       await finalizeAction({
-    //         automationId: auto._id,
-    //         postId: c.mediaId,
-    //         igUserId: c.fromUserId,
-    //         commentText: c.text,
-    //         commentId: c.commentId,
-    //         channel: "private",
-    //         ok: false,
-    //         error: { message: err.message },
-    //       });
-    //     }
-    //   } else {
-    //     console.log("ℹ️ Private DM already sent for:", c.commentId);
-    //   }
-    // }
+          await finalizeAction({
+            automationId: auto._id,
+            postId: c.mediaId,
+            igUserId: c.fromUserId,
+            commentText: c.text,
+            commentId: c.commentId,
+            channel: "private",
+            ok: false,
+            error: { message: err.message },
+          });
+        }
+      } else {
+        console.log("ℹ️ Private DM already sent for:", c.commentId);
+      }
+    }
 
     // ========== PRIVATE DM (QUEUE ONLY) ==========
-if (auto.dmMessage && auto.buttonText) {
+// if (auto.dmMessage && auto.buttonText) {
 
-  const { proceed, lockId} = await reserveAction({
-    automationId: auto._id,
-    postId: c.mediaId,
-    igUserId: c.fromUserId,
-    commentText: c.text,
-    commentId: c.commentId,
-    channel: "private",
-  });
+//   const { proceed, lockId} = await reserveAction({
+//     automationId: auto._id,
+//     postId: c.mediaId,
+//     igUserId: c.fromUserId,
+//     commentText: c.text,
+//     commentId: c.commentId,
+//     channel: "private",
+//   });
 
-  if (!proceed) {
-    console.log("ℹ️ Private DM already reserved:", c.commentId);
-    continue;
-  }
+//   if (!proceed) {
+//     console.log("ℹ️ Private DM already reserved:", c.commentId);
+//     continue;
+//   }
 
-  const res = await ActionLock.updateOne(
-    { _id: lockId, state: "reserved" },
-    {
-      $set: {
-        state: "queued",
-        scheduledAt: new Date(scheduledAt),
-        payload: {
-          dmMessage: auto.dmMessage,
-          buttonText: auto.buttonText,
-          automationId: auto._id,
-          pageId: fbPageId,
-          creatorId: auto.userId,
-          igUserId: c.fromUserId,
-          commentId: c.commentId,
-        },
-      },
-    }
-  );
+//   const res = await ActionLock.updateOne(
+//     { _id: lockId, state: "reserved" },
+//     {
+//       $set: {
+//         state: "queued",
+//         scheduledAt: new Date(scheduledAt),
+//         payload: {
+//           dmMessage: auto.dmMessage,
+//           buttonText: auto.buttonText,
+//           automationId: auto._id,
+//           pageId: fbPageId,
+//           creatorId: auto.userId,
+//           igUserId: c.fromUserId,
+//           commentId: c.commentId,
+//         },
+//       },
+//     }
+//   );
 
-   if (res.modifiedCount !== 1) {
-    console.log("ℹ️ ActionLock not queued (already processed)");
-    continue;
-  }
+//    if (res.modifiedCount !== 1) {
+//     console.log("ℹ️ ActionLock not queued (already processed)");
+//     continue;
+//   }
 
-    await agenda.schedule(
-    new Date(scheduledAt),
-    "process_action_lock",
-    { actionLockId: lockId }
-  );
+//     await agenda.schedule(
+//     new Date(scheduledAt),
+//     "process_action_lock",
+//     { actionLockId: lockId }
+//   );
 
-  console.log("🕒 Private DM queued:", {
-    commentId: c.commentId,
-    scheduledAt: new Date(scheduledAt).toISOString(),
-  });
-}
+//   console.log("🕒 Private DM queued:", {
+//     commentId: c.commentId,
+//     scheduledAt: new Date(scheduledAt).toISOString(),
+//   });
+// }
 
   }
 }
