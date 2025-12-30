@@ -961,14 +961,14 @@ const matched =
 if (!matched) {
   console.log("ℹ️ No keyword match for comment:", {
     raw: c.text,
-    normalized: normalizedComment,
+    normalized: canonicalComment,
   });
   continue;
 }
 
 console.log("🎯 Comment matched automation:", {
   raw: c.text,
-  normalized: normalizedComment,
+  normalized: canonicalComment,
 });
 
 
