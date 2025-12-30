@@ -12,7 +12,6 @@ import ConversationState from "./models/ConversationState.js";
 import { persistInboxMessage } from "./services/inboxPersistence.js";
 import { publishInboxMessageHTTP, publishConversationUpdate } from "./services/realtimePublisher.js";
 import levenshtein from "fast-levenshtein";
-import wordsToNumbers from "words-to-numbers";
 
 
 const app = express();
@@ -95,28 +94,6 @@ function normalizeComment(text = "") {
 
   return t;
 }
-
-function normalizeNumbers(text) {
-  try {
-    const converted = wordsToNumbers(text, { fuzzy: true });
-    return typeof converted === "number"
-      ? String(converted)
-      : String(converted || text);
-  } catch {
-    return text;
-  }
-}
-
-function canonicalizeComment(text) {
-  const base = normalizeComment(text);
-
-  // Convert number words → digits
-  const withNumbers = normalizeNumbers(base);
-
-  return withNumbers;
-}
-
-
 
 function keywordMatch(normalizedText, keywords = []) {
   if (!normalizedText || !keywords.length) return false;
@@ -944,31 +921,29 @@ for (const c of commentEvents) {
 
   for (const auto of automations) {
     // Keyword matching
-
- const canonicalComment = canonicalizeComment(c.text);
+ const normalizedComment = normalizeComment(c.text);
 
 // Normalize automation keywords
-const canonicalKeywords = (auto.keywords || [])
-  .map(canonicalizeComment)
+const normalizedKeywords = (auto.keywords || [])
+  .map(normalizeComment)
   .filter(Boolean);
-
 
 // Smart keyword match
 const matched =
-  canonicalKeywords.length === 0 ||
-  keywordMatch(canonicalComment, canonicalKeywords);
+  normalizedKeywords.length === 0 ||
+  keywordMatch(normalizedComment, normalizedKeywords);
 
 if (!matched) {
   console.log("ℹ️ No keyword match for comment:", {
     raw: c.text,
-    normalized: canonicalComment,
+    normalized: normalizedComment,
   });
   continue;
 }
 
 console.log("🎯 Comment matched automation:", {
   raw: c.text,
-  normalized: canonicalComment,
+  normalized: normalizedComment,
 });
 
 
