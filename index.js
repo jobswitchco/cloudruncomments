@@ -60,6 +60,68 @@ function normalize(str = "") {
   return String(str).toLowerCase().trim();
 }
 
+// ---------- SMART COMMENT NORMALIZATION ----------
+
+// Reduce repeated characters: priceeee -> price
+function collapseRepeats(str) {
+  return str.replace(/(.)\1{2,}/g, "$1");
+}
+
+// Join spaced letters: p r i c e -> price
+function joinSpacedLetters(str) {
+  return str.replace(/\b(?:[a-z]\s){2,}[a-z]\b/g, (match) =>
+    match.replace(/\s+/g, "")
+  );
+}
+
+// Full normalization pipeline for comments
+function normalizeComment(text = "") {
+  let t = String(text).toLowerCase();
+
+  // Replace symbols with space
+  t = t.replace(/[-_.,!?@#$%^&*()+=/\\[\]{}|:;"'<>\n\r]/g, " ");
+
+  // Collapse extra spaces
+  t = t.replace(/\s+/g, " ").trim();
+
+  // Join spaced letters
+  t = joinSpacedLetters(t);
+
+  // Reduce repeated characters
+  t = collapseRepeats(t);
+
+  return t;
+}
+
+function keywordMatch(normalizedText, keywords = []) {
+  if (!normalizedText || !keywords.length) return false;
+
+  const tokens = normalizedText.split(" ");
+
+  return keywords.some((kw) => {
+    const k = normalizeComment(kw);
+
+    // 1️⃣ Exact word
+    if (tokens.includes(k)) return true;
+
+    // 2️⃣ Substring match
+    if (normalizedText.includes(k)) return true;
+
+    // 3️⃣ Fuzzy: pricee, prce (edit distance ≤ 1)
+    return tokens.some((token) => {
+      if (Math.abs(token.length - k.length) > 1) return false;
+      let diff = 0;
+      for (let i = 0; i < Math.min(token.length, k.length); i++) {
+        if (token[i] !== k[i]) diff++;
+        if (diff > 1) return false;
+      }
+      return true;
+    });
+  });
+}
+
+
+
 function escapeRegex(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -862,12 +924,31 @@ for (const c of commentEvents) {
 
   for (const auto of automations) {
     // Keyword matching
-    const normalizedKeywords = (auto.keywords || []).map(normalize).filter(Boolean);
-    const matched = normalizedKeywords.length === 0 || normalizedKeywords.some((kw) => c.text.includes(kw));
-    if (!matched) {
-      console.log("ℹ️ No keyword match for comment:", c.text);
-      continue;
-    }
+ const normalizedComment = normalizeComment(c.text);
+
+// Normalize automation keywords
+const normalizedKeywords = (auto.keywords || [])
+  .map(normalizeComment)
+  .filter(Boolean);
+
+// Smart keyword match
+const matched =
+  normalizedKeywords.length === 0 ||
+  keywordMatch(normalizedComment, normalizedKeywords);
+
+if (!matched) {
+  console.log("ℹ️ No keyword match for comment:", {
+    raw: c.text,
+    normalized: normalizedComment,
+  });
+  continue;
+}
+
+console.log("🎯 Comment matched automation:", {
+  raw: c.text,
+  normalized: normalizedComment,
+});
+
 
     // Fetch tokens (with caching)
     let creds = userTokenCache.get(String(auto.userId));
