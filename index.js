@@ -1078,7 +1078,8 @@ if (auto.hasReply && replyCandidates.length > 0) {
          payload: {
           replyText: replyTextToSend,
           pageId: fbPageId,
-          pageUserId: auto.userId,
+          creatorId: auto.userId,
+          automationId: auto._id
         },
       },
     }
