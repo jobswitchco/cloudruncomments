@@ -59,7 +59,7 @@ async function connectMongo() {
 }
 
 
-const COMMENT_DELAY_BUCKETS = [20, 42, 60, 86, 120];
+const COMMENT_DELAY_BUCKETS = [35, 42, 60, 86, 120];
 
 async function computeHumanDelayMs() {
   const bucket =
