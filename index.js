@@ -989,55 +989,55 @@ console.log("🎯 Comment matched automation:", {
 
 // =============== PUBLIC REPLY PREV CODE ================
 
- if (auto.hasReply && replyCandidates.length > 0) {
+//  if (auto.hasReply && replyCandidates.length > 0) {
       
-      // 3. Select a random reply
-      const replyTextToSend = replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
+//       // 3. Select a random reply
+//       const replyTextToSend = replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
 
-      const { proceed } = await reserveAction({
-        automationId: auto._id,
-        postId: c.mediaId,
-        igUserId: c.fromUserId,
-        commentText: c.text,
-        commentId: c.commentId,
-        channel: "public",
-      });
+//       const { proceed } = await reserveAction({
+//         automationId: auto._id,
+//         postId: c.mediaId,
+//         igUserId: c.fromUserId,
+//         commentText: c.text,
+//         commentId: c.commentId,
+//         channel: "public",
+//       });
 
-      if (proceed) {
-        try {
-          // 4. Send the selected random text
-          await replyToCommentPublic(c.commentId, replyTextToSend, accessToken);
-          console.log(`✅ Public reply sent (${replyTextToSend}):`, c.commentId);
+//       if (proceed) {
+//         try {
+//           // 4. Send the selected random text
+//           await replyToCommentPublic(c.commentId, replyTextToSend, accessToken);
+//           console.log(`✅ Public reply sent (${replyTextToSend}):`, c.commentId);
 
-          await finalizeAction({
-            automationId: auto._id,
-            postId: c.mediaId,
-            igUserId: c.fromUserId,
-            commentText: c.text,
-            commentId: c.commentId,
-            channel: "public",
-            ok: true,
-          });
-        } catch (err) {
-          console.error("❌ Public reply failed:", err.message);
+//           await finalizeAction({
+//             automationId: auto._id,
+//             postId: c.mediaId,
+//             igUserId: c.fromUserId,
+//             commentText: c.text,
+//             commentId: c.commentId,
+//             channel: "public",
+//             ok: true,
+//           });
+//         } catch (err) {
+//           console.error("❌ Public reply failed:", err.message);
           
-          await finalizeAction({
-            automationId: auto._id,
-            postId: c.mediaId,
-            igUserId: c.fromUserId,
-            commentText: c.text,
-            commentId: c.commentId,
-            channel: "public",
-            ok: false,
-            error: { message: err.message },
-          });
+//           await finalizeAction({
+//             automationId: auto._id,
+//             postId: c.mediaId,
+//             igUserId: c.fromUserId,
+//             commentText: c.text,
+//             commentId: c.commentId,
+//             channel: "public",
+//             ok: false,
+//             error: { message: err.message },
+//           });
           
-          continue; // Skip private DM if public reply failed
-        }
-      } else {
-        console.log("ℹ️ Public reply already sent for:", c.commentId);
-      }
-    }
+//           continue; // Skip private DM if public reply failed
+//         }
+//       } else {
+//         console.log("ℹ️ Public reply already sent for:", c.commentId);
+//       }
+//     }
 
 
   // ✅ Compute human-like delay
