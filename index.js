@@ -1849,6 +1849,43 @@ async function executeAction({
       return { success: true, isNested: true };
     }
 
+       case "finishingMessage": {
+      const finalMessage = action.config?.finishingMessage || "Thank you! 😊";
+      
+      console.log("→ Sending finishing message:", finalMessage);
+
+      await sendFlowMessage({
+        recipient: { id: senderId },
+        flowNode: {
+          type: "text",
+          message: finalMessage,
+        },
+        pageAccessToken,
+        fbPageId,
+      });
+
+      console.log("✅ Finishing message sent");
+      
+      // Mark conversation as completed since this is the final message
+      conversation.addHistory({
+        flowId: String(parentNodeId || "final"),
+        flowName: "FINISHING_MESSAGE",
+        messageSent: finalMessage,
+        timestamp: new Date(),
+      });
+
+      conversation.markCompleted();
+      await conversation.save();
+
+      // Update automation stats
+      await Automation.updateOne(
+        { _id: conversation.automationId },
+        { $inc: { "runStats.flowConversationsCompleted": 1 } }
+      );
+
+      return { success: true, completed: true, isFinal: true };
+    }
+
     default:
       console.warn(`⚠️ Unknown action type: ${action.type}`);
       return { success: false, error: "Unknown action type" };
