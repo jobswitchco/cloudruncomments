@@ -18,8 +18,7 @@ const AutomationSchema = new Schema(
     keywords: { type: Array, default: []},
     hasReply: { type: Boolean, default: false},
     replyComments: { type: [String], default: [] },
-
-
+    igUserId: {type: String },
     createdAt: { type: Date },
     status: {
       type: String,

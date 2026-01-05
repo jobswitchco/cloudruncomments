@@ -920,8 +920,6 @@ app.post("/pubsub", async (req, res) => {
 
     console.log(`📬 Processing ${commentEvents.length} comment(s)`);
 
-      console.log('commentEvents : ', commentEvents);
-
 
     const userTokenCache = new Map();
 
@@ -929,11 +927,11 @@ app.post("/pubsub", async (req, res) => {
       // ============================================================================
       // STEP 1: Find existing post-specific automation
       // ============================================================================
-      console.log('CCCCCCCCCCCCCC : ', c);
       let automation = await Automation.findOne({
         platform: "instagram",
         status: "active",
         postId: c.mediaId,
+        igUserId: c.pageId
       }).lean();
 
       // ============================================================================
@@ -948,6 +946,7 @@ app.post("/pubsub", async (req, res) => {
           platform: "instagram",
           status: "active",
           postType: "futurepost",
+          igUserId: c.pageId
         }).lean();
 
         if (template) {
@@ -973,6 +972,7 @@ app.post("/pubsub", async (req, res) => {
                   repliedCount: 0,
                   thumbnail: template.thumbnail || null,
                   postLive: true,
+                  igUserId: template.igUserId,
                   lastCheckedAt: new Date(),
                   caption: template.caption || null,
                   dmMessage: template.dmMessage,
