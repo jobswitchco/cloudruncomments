@@ -882,6 +882,7 @@ await publishInboxMessageHTTP({
 
 
 // ========== PUB/SUB ENDPOINT: COMMENTS ==========
+// ========== PUB/SUB ENDPOINT: COMMENTS ==========
 app.post("/pubsub", async (req, res) => {
   try {
     console.log("📨 /pubsub called (comments)");
@@ -921,327 +922,269 @@ app.post("/pubsub", async (req, res) => {
 
     const userTokenCache = new Map();
 
-for (const c of commentEvents) {
-  const automations = await Automation.find({
-    platform: "instagram",
-    status: "active",
-    postId: c.mediaId,
-  }).lean();
+    for (const c of commentEvents) {
+      // ============================================================================
+      // STEP 1: Find existing post-specific automation
+      // ============================================================================
+      let automation = await Automation.findOne({
+        platform: "instagram",
+        status: "active",
+        postId: c.mediaId,
+      }).lean();
 
-  if (!automations.length) {
-    console.log("ℹ️ No active automation for media:", c.mediaId);
-    continue;
-  }
+      // ============================================================================
+      // STEP 2: If not found, check for future post template and clone it
+      // ============================================================================
+      if (!automation) {
+        console.log(`🔍 No post-specific automation found for media: ${c.mediaId}`);
+        console.log(`🔍 Checking for future post template...`);
 
-  for (const auto of automations) {
-    // Keyword matching
- const normalizedComment = normalizeComment(c.text);
+        // Find active future post template
+        const template = await Automation.findOne({
+          platform: "instagram",
+          status: "active",
+          postType: "futurepost",
+        }).lean();
 
-// Normalize automation keywords
-const normalizedKeywords = (auto.keywords || [])
-  .map(normalizeComment)
-  .filter(Boolean);
+        if (template) {
+          console.log(`📋 Future post template found: ${template._id}`);
+          
+          // ============================================================================
+          // ATOMIC CLONE: Use findOneAndUpdate with upsert to prevent duplicates
+          // ============================================================================
+          try {
+            automation = await Automation.findOneAndUpdate(
+              {
+                // Match criteria - prevents duplicates
+                postId: c.mediaId,
+                platform: "instagram",
+              },
+              {
+                $setOnInsert: {
+                  // Copy all fields from template
+                  userId: template.userId,
+                  platform: template.platform,
+                  postType: "post", // ✅ Changed from 'futurepost'
+                  postId: c.mediaId, // ✅ Set actual postId
+                  repliedCount: 0,
+                  thumbnail: template.thumbnail || null,
+                  postLive: true,
+                  lastCheckedAt: new Date(),
+                  caption: template.caption || null,
+                  dmMessage: template.dmMessage,
+                  buttonText: template.buttonText,
+                  flowNodes: template.flowNodes || [],
+                  keywords: template.keywords || [],
+                  hasReply: template.hasReply || false,
+                  replyComments: template.replyComments || [],
+                  status: "active",
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                  clonedFrom: template._id, // ✅ Track template origin
+                }
+              },
+              {
+                upsert: true, // Create if doesn't exist
+                new: true, // Return the new document
+                setDefaultsOnInsert: true,
+              }
+            );
 
-// Smart keyword match
-const matched =
-  normalizedKeywords.length === 0 ||
-  keywordMatch(normalizedComment, normalizedKeywords);
+            console.log(`✅ Cloned future post template to new automation:`, {
+              newAutomationId: automation._id,
+              postId: c.mediaId,
+              templateId: template._id,
+            });
 
-if (!matched) {
-  console.log("ℹ️ No keyword match for comment:", {
-    raw: c.text,
-    normalized: normalizedComment,
-  });
-  continue;
-}
+          } catch (cloneErr) {
+            console.error("❌ Failed to clone template:", cloneErr.message);
+            // If cloning fails, try to fetch if it was created by another request
+            automation = await Automation.findOne({
+              platform: "instagram",
+              status: "active",
+              postId: c.mediaId,
+            }).lean();
+          }
+        } else {
+          console.log(`ℹ️ No future post template found`);
+        }
+      }
 
-console.log("🎯 Comment matched automation:", {
-  raw: c.text,
-  normalized: normalizedComment,
-});
+      // ============================================================================
+      // STEP 3: If still no automation, skip this comment
+      // ============================================================================
+      if (!automation) {
+        console.log("ℹ️ No automation found (neither specific nor template) for media:", c.mediaId);
+        continue;
+      }
 
+      // ============================================================================
+      // STEP 4: Keyword matching
+      // ============================================================================
+      console.log(`✅ Processing comment with automation: ${automation._id}`);
 
-    // Fetch tokens (with caching)
-    let creds = userTokenCache.get(String(auto.userId));
-    if (!creds) {
-      creds = await ensureFreshPageTokenForUser(auto.userId);
-      userTokenCache.set(String(auto.userId), creds);
-    }
+      const normalizedComment = normalizeComment(c.text);
 
-    const { fbPageAccessToken: accessToken, fbPageId } = creds;
-    if (!accessToken || !fbPageId) {
-      console.warn("⚠️ Missing tokens for user:", auto.userId);
-      continue;
-    }
+      // Normalize automation keywords
+      const normalizedKeywords = (automation.keywords || [])
+        .map(normalizeComment)
+        .filter(Boolean);
 
-    // 1. Gather available replies (handle both new Array and old String for backward compatibility)
-    let replyCandidates = [];
-    
-    // Check new array format
-    if (Array.isArray(auto.replyComments) && auto.replyComments.length > 0) {
-      replyCandidates = auto.replyComments;
-    } 
-    // Fallback to old string format if array is empty
-    else if (auto.replyComment) {
-      replyCandidates = [auto.replyComment];
-    }
+      // Smart keyword match
+      const matched =
+        normalizedKeywords.length === 0 ||
+        keywordMatch(normalizedComment, normalizedKeywords);
 
+      if (!matched) {
+        console.log("ℹ️ No keyword match for comment:", {
+          raw: c.text,
+          normalized: normalizedComment,
+        });
+        continue;
+      }
 
-// =============== PUBLIC REPLY PREV CODE ================
+      console.log("🎯 Comment matched automation:", {
+        raw: c.text,
+        normalized: normalizedComment,
+      });
 
-//  if (auto.hasReply && replyCandidates.length > 0) {
+      // ============================================================================
+      // STEP 5: Fetch tokens (with caching)
+      // ============================================================================
+      let creds = userTokenCache.get(String(automation.userId));
+      if (!creds) {
+        creds = await ensureFreshPageTokenForUser(automation.userId);
+        userTokenCache.set(String(automation.userId), creds);
+      }
+
+      const { fbPageAccessToken: accessToken, fbPageId } = creds;
+      if (!accessToken || !fbPageId) {
+        console.warn("⚠️ Missing tokens for user:", automation.userId);
+        continue;
+      }
+
+      // ============================================================================
+      // STEP 6: Gather available replies
+      // ============================================================================
+      let replyCandidates = [];
       
-//       // 3. Select a random reply
-//       const replyTextToSend = replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
+      if (Array.isArray(automation.replyComments) && automation.replyComments.length > 0) {
+        replyCandidates = automation.replyComments;
+      } else if (automation.replyComment) {
+        replyCandidates = [automation.replyComment];
+      }
 
-//       const { proceed } = await reserveAction({
-//         automationId: auto._id,
-//         postId: c.mediaId,
-//         igUserId: c.fromUserId,
-//         commentText: c.text,
-//         commentId: c.commentId,
-//         channel: "public",
-//       });
+      // ============================================================================
+      // STEP 7: Compute human-like delay
+      // ============================================================================
+      const delayMs = await computeHumanDelayMs();
+      const scheduledAt = Date.now() + delayMs;
 
-//       if (proceed) {
-//         try {
-//           // 4. Send the selected random text
-//           await replyToCommentPublic(c.commentId, replyTextToSend, accessToken);
-//           console.log(`✅ Public reply sent (${replyTextToSend}):`, c.commentId);
+      // ============================================================================
+      // STEP 8: PUBLIC REPLY (QUEUE ONLY)
+      // ============================================================================
+      if (automation.hasReply && replyCandidates.length > 0) {
+        const replyTextToSend =
+          replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
 
-//           await finalizeAction({
-//             automationId: auto._id,
-//             postId: c.mediaId,
-//             igUserId: c.fromUserId,
-//             commentText: c.text,
-//             commentId: c.commentId,
-//             channel: "public",
-//             ok: true,
-//           });
-//         } catch (err) {
-//           console.error("❌ Public reply failed:", err.message);
-          
-//           await finalizeAction({
-//             automationId: auto._id,
-//             postId: c.mediaId,
-//             igUserId: c.fromUserId,
-//             commentText: c.text,
-//             commentId: c.commentId,
-//             channel: "public",
-//             ok: false,
-//             error: { message: err.message },
-//           });
-          
-//           continue; // Skip private DM if public reply failed
-//         }
-//       } else {
-//         console.log("ℹ️ Public reply already sent for:", c.commentId);
-//       }
-//     }
-
-
-  // ✅ Compute human-like delay
-  const delayMs = await computeHumanDelayMs();
-  const scheduledAt = Date.now() + delayMs;
-
-
-// ========== PUBLIC REPLY (QUEUE ONLY) ==========
-if (auto.hasReply && replyCandidates.length > 0) {
-
-  const replyTextToSend =
-    replyCandidates[Math.floor(Math.random() * replyCandidates.length)];
-
-  const { proceed, lockId } = await reserveAction({
-    automationId: auto._id,
-    postId: c.mediaId,
-    igUserId: c.fromUserId,
-    commentText: c.text,
-    commentId: c.commentId,
-    channel: "public",
-  });
-
-  if (!proceed) {
-    console.log("ℹ️ Public reply already reserved:", c.commentId);
-    continue;
-  }
-
-
-
-  // ✅ Create a QUEUED action (DB or Redis reference)
-
-  const res = await ActionLock.updateOne(
-    { _id: lockId, state: "reserved" },
-    {
-      $set: {
-        state: "queued",
-        scheduledAt: new Date(scheduledAt),
-         payload: {
-          replyText: replyTextToSend,
-          pageId: fbPageId,
-          creatorId: auto.userId,
-          automationId: auto._id
-        },
-      },
-    }
-  );
-
-  if (res.modifiedCount !== 1) {
-  console.log("ℹ️ ActionLock not queued (already processed)");
-  continue;
-}
-
-  // 🔥 Schedule Agenda job (PUBLIC)
-  await agenda.schedule(
-    new Date(scheduledAt),
-    "process_action_lock",
-    { actionLockId: lockId }
-  );
-
-
-  console.log("🕒 Public reply queued:", {
-    commentId: c.commentId,
-    scheduledAt: new Date(scheduledAt).toISOString(),
-  });
-}
-
-
-    // ========== PRIVATE DM PREV==========
-
-    // if (auto.dmMessage && auto.buttonText) {
-    //   const { proceed: canSendPrivate } = await reserveAction({
-    //     automationId: auto._id,
-    //     postId: c.mediaId,
-    //     igUserId: c.fromUserId,
-    //     commentText: c.text,
-    //     commentId: c.commentId,
-    //     channel: "private",
-    //   });
-
-    //   if (canSendPrivate) {
-    //     try {
-    //       // Send initial DM
-    //       await sendInitialDM({
-    //         fbPageId,
-    //         commentId: c.commentId,
-    //         automation: auto,
-    //         pageAccessToken: accessToken,
-    //         igUserId: c.fromUserId,
-    //         igUsername: c.fromUsername,
-    //       });
-
-    //       // Fetch user details
-    //       const userDetailsUrl = `${FB_API}/${c.fromUserId}`;
-    //       const { data: userDetails } = await axios.get(userDetailsUrl, {
-    //         params: {
-    //           access_token: accessToken,
-    //           fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
-    //         },
-    //       });
-
-    //       // Save to RepliedComment
-    //       await RepliedComment.create({
-    //         commentId: c.commentId,
-    //         postId: c.mediaId,
-    //         automationId: auto._id,
-    //         userId: auto.userId,
-    //         channel: "private",
-    //         state: "sent",
-    //         text: c.text,
-    //         sentMessage: auto.dmMessage,
-    //         status: "pending",
-    //         igUserId: userDetails.id,
-    //         username: userDetails.username,
-    //         profilePic: userDetails.profile_pic,
-    //         followsBusiness: userDetails.is_user_follow_business,
-    //         businessFollowsUser: userDetails.is_business_follow_user,
-    //       });
-
-    //       await finalizeAction({
-    //         automationId: auto._id,
-    //         postId: c.mediaId,
-    //         igUserId: c.fromUserId,
-    //         commentText: c.text,
-    //         commentId: c.commentId,
-    //         channel: "private",
-    //         ok: true,
-    //       });
-
-    //       console.log("✅ Private DM sent:", c.commentId);
-          
-    //     } catch (err) {
-    //       console.error("❌ Private DM failed:", err.message);
-          
-    //       await finalizeAction({
-    //         automationId: auto._id,
-    //         postId: c.mediaId,
-    //         igUserId: c.fromUserId,
-    //         commentText: c.text,
-    //         commentId: c.commentId,
-    //         channel: "private",
-    //         ok: false,
-    //         error: { message: err.message },
-    //       });
-    //     }
-    //   } else {
-    //     console.log("ℹ️ Private DM already sent for:", c.commentId);
-    //   }
-    // }
-
-    // ========== PRIVATE DM (QUEUE ONLY) ==========
-if (auto.dmMessage && auto.buttonText) {
-
-  const { proceed, lockId} = await reserveAction({
-    automationId: auto._id,
-    postId: c.mediaId,
-    igUserId: c.fromUserId,
-    commentText: c.text,
-    commentId: c.commentId,
-    channel: "private",
-  });
-
-  if (!proceed) {
-    console.log("ℹ️ Private DM already reserved:", c.commentId);
-    continue;
-  }
-
-  const res = await ActionLock.updateOne(
-    { _id: lockId, state: "reserved" },
-    {
-      $set: {
-        state: "queued",
-        scheduledAt: new Date(scheduledAt),
-        payload: {
-          dmMessage: auto.dmMessage,
-          buttonText: auto.buttonText,
-          automationId: auto._id,
-          pageId: fbPageId,
-          creatorId: auto.userId,
+        const { proceed, lockId } = await reserveAction({
+          automationId: automation._id,
+          postId: c.mediaId,
           igUserId: c.fromUserId,
+          commentText: c.text,
           commentId: c.commentId,
-        },
-      },
+          channel: "public",
+        });
+
+        if (!proceed) {
+          console.log("ℹ️ Public reply already reserved:", c.commentId);
+        } else {
+          const res = await ActionLock.updateOne(
+            { _id: lockId, state: "reserved" },
+            {
+              $set: {
+                state: "queued",
+                scheduledAt: new Date(scheduledAt),
+                payload: {
+                  replyText: replyTextToSend,
+                  pageId: fbPageId,
+                  creatorId: automation.userId,
+                  automationId: automation._id
+                },
+              },
+            }
+          );
+
+          if (res.modifiedCount !== 1) {
+            console.log("ℹ️ ActionLock not queued (already processed)");
+          } else {
+            // Schedule Agenda job (PUBLIC)
+            await agenda.schedule(
+              new Date(scheduledAt),
+              "process_action_lock",
+              { actionLockId: lockId }
+            );
+
+            console.log("🕒 Public reply queued:", {
+              commentId: c.commentId,
+              scheduledAt: new Date(scheduledAt).toISOString(),
+            });
+          }
+        }
+      }
+
+      // ============================================================================
+      // STEP 9: PRIVATE DM (QUEUE ONLY)
+      // ============================================================================
+      if (automation.dmMessage && automation.buttonText) {
+        const { proceed, lockId } = await reserveAction({
+          automationId: automation._id,
+          postId: c.mediaId,
+          igUserId: c.fromUserId,
+          commentText: c.text,
+          commentId: c.commentId,
+          channel: "private",
+        });
+
+        if (!proceed) {
+          console.log("ℹ️ Private DM already reserved:", c.commentId);
+        } else {
+          const res = await ActionLock.updateOne(
+            { _id: lockId, state: "reserved" },
+            {
+              $set: {
+                state: "queued",
+                scheduledAt: new Date(scheduledAt),
+                payload: {
+                  dmMessage: automation.dmMessage,
+                  buttonText: automation.buttonText,
+                  automationId: automation._id,
+                  pageId: fbPageId,
+                  creatorId: automation.userId,
+                  igUserId: c.fromUserId,
+                  commentId: c.commentId,
+                },
+              },
+            }
+          );
+
+          if (res.modifiedCount !== 1) {
+            console.log("ℹ️ ActionLock not queued (already processed)");
+          } else {
+            await agenda.schedule(
+              new Date(scheduledAt),
+              "process_action_lock",
+              { actionLockId: lockId }
+            );
+
+            console.log("🕒 Private DM queued:", {
+              commentId: c.commentId,
+              scheduledAt: new Date(scheduledAt).toISOString(),
+            });
+          }
+        }
+      }
     }
-  );
-
-   if (res.modifiedCount !== 1) {
-    console.log("ℹ️ ActionLock not queued (already processed)");
-    continue;
-  }
-
-    await agenda.schedule(
-    new Date(scheduledAt),
-    "process_action_lock",
-    { actionLockId: lockId }
-  );
-
-  console.log("🕒 Private DM queued:", {
-    commentId: c.commentId,
-    scheduledAt: new Date(scheduledAt).toISOString(),
-  });
-}
-
-  }
-}
 
     return res.status(204).send();
   } catch (err) {

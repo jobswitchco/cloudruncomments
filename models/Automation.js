@@ -27,6 +27,7 @@ const AutomationSchema = new Schema(
       default: "active",
       index: true,
     },
+     clonedFrom: { type: Schema.Types.ObjectId, ref: "automations" },
 
   },
   { timestamps: true }
