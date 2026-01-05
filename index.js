@@ -1006,6 +1006,7 @@ app.post("/pubsub", async (req, res) => {
               platform: "instagram",
               status: "active",
               postId: c.mediaId,
+              igUserId: c.pageId
             }).lean();
           }
         } else {
