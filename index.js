@@ -979,7 +979,6 @@ app.post("/pubsub", async (req, res) => {
                   replyComments: template.replyComments || [],
                   status: "active",
                   createdAt: new Date(),
-                  updatedAt: new Date(),
                   clonedFrom: template._id, // ✅ Track template origin
                 }
               },
