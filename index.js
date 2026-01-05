@@ -920,12 +920,16 @@ app.post("/pubsub", async (req, res) => {
 
     console.log(`📬 Processing ${commentEvents.length} comment(s)`);
 
+      console.log('commentEvents : ', commentEvents);
+
+
     const userTokenCache = new Map();
 
     for (const c of commentEvents) {
       // ============================================================================
       // STEP 1: Find existing post-specific automation
       // ============================================================================
+      console.log('CCCCCCCCCCCCCC : ', c);
       let automation = await Automation.findOne({
         platform: "instagram",
         status: "active",
