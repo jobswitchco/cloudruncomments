@@ -144,6 +144,9 @@ async function extractCommentEvents(envelope) {
     const entryTime = entry?.time || null;
     const changes = entry?.changes || [];
 
+    console.log('changes : ', changes);
+    console.log('entry : ', entry);
+
 
     for (const ch of changes) {
       const v = ch?.value || {};
@@ -918,6 +921,8 @@ app.post("/pubsub", async (req, res) => {
       return res.status(204).send();
     }
 
+    console.log('commentEvents : ', commentEvents);
+
     console.log(`📬 Processing ${commentEvents.length} comment(s)`);
 
 
@@ -933,6 +938,8 @@ app.post("/pubsub", async (req, res) => {
         postId: c.mediaId,
         igUserId: c.pageId
       }).lean();
+
+      console.log('CCCCCCCCCCCCCCC : ', c);
 
       // ============================================================================
       // STEP 2: If not found, check for future post template and clone it
