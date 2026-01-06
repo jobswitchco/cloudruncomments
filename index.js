@@ -144,9 +144,6 @@ async function extractCommentEvents(envelope) {
     const entryTime = entry?.time || null;
     const changes = entry?.changes || [];
 
-    console.log('changes : ', changes);
-    console.log('entry : ', entry);
-
 
     for (const ch of changes) {
       const v = ch?.value || {};
@@ -921,14 +918,22 @@ app.post("/pubsub", async (req, res) => {
       return res.status(204).send();
     }
 
-    console.log('commentEvents : ', commentEvents);
-
     console.log(`📬 Processing ${commentEvents.length} comment(s)`);
 
 
     const userTokenCache = new Map();
 
     for (const c of commentEvents) {
+
+       if (!c.fromUserId) {
+    console.warn(`⚠️ Skipping comment event without fromUserId:`, {
+      commentId: c.commentId,
+      text: c.text?.substring(0, 50),
+      mediaId: c.mediaId,
+      eventType: 'comment'
+    });
+    continue;
+  }
       // ============================================================================
       // STEP 1: Find existing post-specific automation
       // ============================================================================
