@@ -1418,6 +1418,87 @@ async function executeFlowNode({
 /**
  * Execute a quickReply node
  */
+// async function executeQuickReplyNode({
+//   flowNode,
+//   conversation,
+//   senderId,
+//   pageAccessToken,
+//   fbPageId,
+// }) {
+
+//   // LIMITATION: Button Templates only support up to 3 buttons.
+//   // We slice(0, 3) to prevent API errors.
+//   const buttons = (flowNode.replyOptions || [])
+//     .slice(0, 3) 
+//     .map((option) => ({
+//       type: "postback", // Changed to postback for buttons
+//       title: (option.text || "Option").toString().slice(0, 20),
+//       payload: `QR_${flowNode.id}_${option.id}`,
+//     }));
+
+//   if (buttons.length === 0) {
+//     throw new Error("No quick reply options available");
+//   }
+
+//   const url = `${FB_API}/${fbPageId}/messages`;
+  
+//   // MODIFIED: Constructing a Button Template Payload instead of Text+QuickReplies
+//   const buttonBody = {
+//     recipient: { id: String(senderId) },
+//     message: {
+//       attachment: {
+//         type: "template",
+//         payload: {
+//           template_type: "button",
+//           text: flowNode.config?.quickReplyQuestion || "Choose one:",
+//           buttons: buttons,
+//         },
+//       },
+//     },
+//   };
+
+//   console.log("→ Sending quick_reply as BUTTONS to user:", senderId);
+
+//   try {
+//     const { data, status } = await http.post(url, buttonBody, {
+//       params: { access_token: pageAccessToken },
+//     });
+    
+//     if (status >= 400) {
+//       console.error("Facebook API error data:", data);
+//       throw new Error(`Quick replies (buttons) failed: ${JSON.stringify(data)}`);
+//     }
+    
+//     console.log("✅ Quick replies (buttons) sent");
+
+//     // Update conversation
+//     conversation.addHistory({
+//       flowId: String(flowNode.id),
+//       flowName: "QUICK_REPLY_BUTTONS",
+//       messageSent: flowNode.config?.quickReplyQuestion,
+//       timestamp: new Date(),
+//     });
+
+//     conversation.currentFlowId = String(flowNode.id);
+//     await conversation.save();
+
+//     return { success: true, data };
+    
+//   } catch (err) {
+//     if (err.response) {
+//       console.error("FB API response error status:", err.response.status);
+//       console.error("FB API response error data:", err.response.data);
+//     } else {
+//       console.error("Error in HTTP request:", err.message);
+//     }
+//     throw err;
+//   }
+// }
+
+/**
+ * Execute a quickReply node with optional image support
+ * Uses Generic Template if image exists, Button Template otherwise
+ */
 async function executeQuickReplyNode({
   flowNode,
   conversation,
@@ -1426,12 +1507,15 @@ async function executeQuickReplyNode({
   fbPageId,
 }) {
 
-  // LIMITATION: Button Templates only support up to 3 buttons.
-  // We slice(0, 3) to prevent API errors.
+  // Extract image URL from config (uploaded by frontend)
+  const imageUrl = flowNode.config?.quickReplyImage || null;
+  const questionText = flowNode.config?.quickReplyQuestion || "Choose one:";
+
+  // LIMITATION: Button/Generic Templates only support up to 3 buttons
   const buttons = (flowNode.replyOptions || [])
     .slice(0, 3) 
     .map((option) => ({
-      type: "postback", // Changed to postback for buttons
+      type: "postback",
       title: (option.text || "Option").toString().slice(0, 20),
       payload: `QR_${flowNode.id}_${option.id}`,
     }));
@@ -1442,40 +1526,67 @@ async function executeQuickReplyNode({
 
   const url = `${FB_API}/${fbPageId}/messages`;
   
-  // MODIFIED: Constructing a Button Template Payload instead of Text+QuickReplies
-  const buttonBody = {
-    recipient: { id: String(senderId) },
-    message: {
-      attachment: {
-        type: "template",
-        payload: {
-          template_type: "button",
-          text: flowNode.config?.quickReplyQuestion || "Choose one:",
-          buttons: buttons,
-        },
-      },
-    },
-  };
+  let messageBody;
 
-  console.log("→ Sending quick_reply as BUTTONS to user:", senderId);
+  // 🔥 CASE 1: Image exists → Use Generic Template (supports images + buttons)
+  if (imageUrl) {
+    console.log("→ Sending quick_reply as GENERIC TEMPLATE (with image) to user:", senderId);
+    
+    messageBody = {
+      recipient: { id: String(senderId) },
+      message: {
+        attachment: {
+          type: "template",
+          payload: {
+            template_type: "generic",
+            elements: [
+              {
+                title: questionText,
+                image_url: imageUrl, // 🔥 Image from GCS
+                buttons: buttons,
+              }
+            ]
+          }
+        }
+      }
+    };
+  } 
+  // 🔥 CASE 2: No image → Use Button Template (simpler, no image)
+  else {
+    console.log("→ Sending quick_reply as BUTTON TEMPLATE (no image) to user:", senderId);
+    
+    messageBody = {
+      recipient: { id: String(senderId) },
+      message: {
+        attachment: {
+          type: "template",
+          payload: {
+            template_type: "button",
+            text: questionText,
+            buttons: buttons,
+          }
+        }
+      }
+    };
+  }
 
   try {
-    const { data, status } = await http.post(url, buttonBody, {
+    const { data, status } = await http.post(url, messageBody, {
       params: { access_token: pageAccessToken },
     });
     
     if (status >= 400) {
       console.error("Facebook API error data:", data);
-      throw new Error(`Quick replies (buttons) failed: ${JSON.stringify(data)}`);
+      throw new Error(`Quick replies failed: ${JSON.stringify(data)}`);
     }
     
-    console.log("✅ Quick replies (buttons) sent");
+    console.log("✅ Quick replies sent successfully");
 
     // Update conversation
     conversation.addHistory({
       flowId: String(flowNode.id),
-      flowName: "QUICK_REPLY_BUTTONS",
-      messageSent: flowNode.config?.quickReplyQuestion,
+      flowName: imageUrl ? "QUICK_REPLY_WITH_IMAGE" : "QUICK_REPLY_BUTTONS",
+      messageSent: questionText,
       timestamp: new Date(),
     });
 
