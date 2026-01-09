@@ -2068,106 +2068,142 @@ async function executeAction({
 }
 
 
-  case "quickReply": {
-      // ✅ NESTED QUICK REPLY (MODIFIED TO BUTTONS)
-      console.log("→ Executing nested quickReply as BUTTONS");
+ case "quickReply": {
+  // ✅ NESTED QUICK REPLY (Button / Generic Template based on image)
+  console.log("→ Executing nested quickReply");
 
-      const nestedConfig = action.config;
+  const nestedConfig = action.config;
 
-      if (!nestedConfig || !nestedConfig.quickReplyQuestion) {
-        console.warn("⚠️ Nested quick reply config missing");
-        return { success: false, error: "Missing nested config" };
-      }
-
-      const nestedOptions = action.replyOptions || nestedConfig.replyOptions || [];
-      
-      console.log("📋 Nested options found:", nestedOptions.length);
-      
-      if (nestedOptions.length === 0) {
-        console.warn("⚠️ No nested quick reply options found");
-        return { success: false, error: "No options" };
-      }
-
-      // LIMITATION: Slice to 3 buttons max for Button Template
-    const buttonPayloads = nestedOptions.slice(0, 3).map((option) => {
-  const action = option.actions?.[0];
-
-  // ✅ Nested redirect / download → web_url
-  if (
-    action &&
-    (action.type === "redirectLink" || action.type === "downloadFile")
-  ) {
-    return {
-      type: "web_url",
-      title: (option.text || "Open").toString().slice(0, 20),
-      url: action.config?.redirectUrl,
-    };
+  if (!nestedConfig || !nestedConfig.quickReplyQuestion) {
+    console.warn("⚠️ Nested quick reply config missing");
+    return { success: false, error: "Missing nested config" };
   }
 
-  // ❌ Everything else → postback
-  return {
-    type: "postback",
-    title: (option.text || "Option").toString().slice(0, 20),
-    payload: `QR_NESTED_${parentNodeId}_${option.id}`,
-  };
-});
+  const nestedOptions =
+    action.replyOptions || nestedConfig.replyOptions || [];
 
+  console.log("📋 Nested options found:", nestedOptions.length);
 
-      console.log("📤 Sending nested buttons to user");
+  if (nestedOptions.length === 0) {
+    console.warn("⚠️ No nested quick reply options found");
+    return { success: false, error: "No options" };
+  }
 
-      // Manually sending Button Template here (bypassing sendFlowMessage to ensure structure)
-      const url = `${FB_API}/${fbPageId}/messages`;
-      const buttonBody = {
+  // =====================================================
+  // Build buttons (max 3 – Meta limitation)
+  // =====================================================
+  const buttonPayloads = nestedOptions.slice(0, 3).map((option) => {
+    const optAction = option.actions?.[0];
+
+    // ✅ Redirect / Download → web_url
+    if (
+      optAction &&
+      (optAction.type === "redirectLink" ||
+        optAction.type === "downloadFile")
+    ) {
+      return {
+        type: "web_url",
+        title: (option.text || "Open").toString().slice(0, 20),
+        url: optAction.config?.redirectUrl,
+      };
+    }
+
+    // ❌ Everything else → postback
+    return {
+      type: "postback",
+      title: (option.text || "Option").toString().slice(0, 20),
+      payload: `QR_NESTED_${parentNodeId}_${option.id}`,
+    };
+  });
+
+  console.log("📤 Sending nested quick reply to user");
+
+  // =====================================================
+  // 🔥 IMAGE-AWARE TEMPLATE SELECTION
+  // =====================================================
+  const url = `${FB_API}/${fbPageId}/messages`;
+  const imageUrl = nestedConfig.quickReplyImage || null;
+
+  const messageBody = imageUrl
+    ? {
+        recipient: { id: String(senderId) },
+        message: {
+          attachment: {
+            type: "template",
+            payload: {
+              template_type: "generic",
+              elements: [
+                {
+                  title:
+                    nestedConfig.quickReplyQuestion || "Choose one:",
+                  image_url: imageUrl,
+                  buttons: buttonPayloads,
+                },
+              ],
+            },
+          },
+        },
+      }
+    : {
         recipient: { id: String(senderId) },
         message: {
           attachment: {
             type: "template",
             payload: {
               template_type: "button",
-              text: nestedConfig.quickReplyQuestion || "Choose one:",
+              text:
+                nestedConfig.quickReplyQuestion || "Choose one:",
               buttons: buttonPayloads,
             },
           },
         },
       };
 
-      try {
-        await http.post(url, buttonBody, { params: { access_token: pageAccessToken } });
-      } catch (e) {
-         console.error("Error sending nested buttons:", e.message);
-         throw e;
-      }
+  try {
+    await http.post(url, messageBody, {
+      params: { access_token: pageAccessToken },
+    });
+  } catch (e) {
+    console.error("❌ Error sending nested quick reply:", e.message);
+    throw e;
+  }
 
-      console.log("✅ Nested buttons sent");
+  console.log("✅ Nested quick reply sent successfully");
 
-      // Store nested config for next interaction
-      const configToStore = {
-        parentNodeId: String(parentNodeId),
-        parentOptionId: String(selectedOption.id),
-        nestedConfig: {
-          ...nestedConfig,
-          replyOptions: nestedOptions 
-        },
-      };
+  // =====================================================
+  // Persist nested config for next user interaction
+  // =====================================================
+  const configToStore = {
+    parentNodeId: String(parentNodeId),
+    parentOptionId: String(selectedOption.id),
+    nestedConfig: {
+      ...nestedConfig,
+      replyOptions: nestedOptions,
+    },
+  };
 
-      conversation.currentNestedQuickReplyConfig = configToStore;
-      
-      conversation.addHistory({
-        flowId: String(parentNodeId),
-        flowName: "NESTED_BUTTONS_SENT",
-        messageSent: nestedConfig.quickReplyQuestion,
-        timestamp: new Date(),
-      });
+  conversation.currentNestedQuickReplyConfig = configToStore;
 
-      await conversation.save();
-      
-      console.log("💾 Nested config saved:", {
-        parentNodeId: configToStore.parentNodeId,
-        optionsCount: nestedOptions.length
-      });
+  conversation.addHistory({
+    flowId: String(parentNodeId),
+    flowName: imageUrl
+      ? "NESTED_QUICK_REPLY_WITH_IMAGE"
+      : "NESTED_QUICK_REPLY_BUTTONS",
+    messageSent: nestedConfig.quickReplyQuestion,
+    timestamp: new Date(),
+  });
 
-      return { success: true, isNested: true };
-    }
+  await conversation.save();
+
+  console.log("💾 Nested config saved:", {
+    parentNodeId: configToStore.parentNodeId,
+    optionsCount: nestedOptions.length,
+    hasImage: !!imageUrl,
+  });
+
+  return { success: true, isNested: true };
+}
+
 
        case "finishingMessage": {
       const finalMessage = action.config?.finishingMessage || "Thank you! 😊";
