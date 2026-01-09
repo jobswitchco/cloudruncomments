@@ -1711,13 +1711,31 @@ async function executeQuickReplyNode({
   const questionText = flowNode.config?.quickReplyQuestion || "Choose one:";
 
   // LIMITATION: Button/Generic Templates only support up to 3 buttons
-  const buttons = (flowNode.replyOptions || [])
-    .slice(0, 3) 
-    .map((option) => ({
+const buttons = (flowNode.replyOptions || [])
+  .slice(0, 3)
+  .map((option) => {
+    const action = option.actions?.[0];
+
+    // ✅ Redirect / Download → web_url button
+    if (
+      action &&
+      (action.type === "redirectLink" || action.type === "downloadFile")
+    ) {
+      return {
+        type: "web_url",
+        title: (option.text || "Open").toString().slice(0, 20),
+        url: action.config?.redirectUrl,
+      };
+    }
+
+    // ❌ All other options → postback
+    return {
       type: "postback",
       title: (option.text || "Option").toString().slice(0, 20),
       payload: `QR_${flowNode.id}_${option.id}`,
-    }));
+    };
+  });
+
 
   if (buttons.length === 0) {
     throw new Error("No quick reply options available");
@@ -1973,67 +1991,82 @@ async function executeAction({
   console.log(`→ Executing action type: ${action.type}`);
 
   switch (action.type) {
+    // case "redirectLink": {
+    //   const redirectUrl = action.config?.redirectUrl || "https://example.com";
+
+    //   console.log("→ Sending redirect link:", redirectUrl);
+
+    //   await sendFlowMessage({
+    //     recipient: { id: senderId },
+    //     flowNode: {
+    //       type: "button",
+    //       message: `You selected: ${selectedOption.text} ✓`,
+    //       buttons: [
+    //         {
+    //           type: "web_url",
+    //           title: "Open Link",
+    //           url: redirectUrl,
+    //         },
+    //       ],
+    //     },
+    //     pageAccessToken,
+    //     fbPageId,
+    //   });
+
+    //   console.log("✅ Redirect link sent");
+    //   return { success: true, completed: true };
+    // }
+
     case "redirectLink": {
-      const redirectUrl = action.config?.redirectUrl || "https://example.com";
+  // ✅ web_url button already opened the link
+  // ❌ Do NOT send any message
+  console.log("ℹ️ Redirect link clicked. No message sent.");
+  return { success: true, completed: true };
+}
 
-      console.log("→ Sending redirect link:", redirectUrl);
 
-      await sendFlowMessage({
-        recipient: { id: senderId },
-        flowNode: {
-          type: "button",
-          message: `You selected: ${selectedOption.text} ✓`,
-          buttons: [
-            {
-              type: "web_url",
-              title: "Open Link",
-              url: redirectUrl,
-            },
-          ],
-        },
-        pageAccessToken,
-        fbPageId,
-      });
+    // case "downloadFile": {
+      
+    //   // Use the redirectUrl from either action type's config
+    //   const redirectUrl = action.config?.redirectUrl || action.config?.downloadFile?.url || "https://example.com";
+    //   const messageText = action.config?.message || "Click below to download:";
+    //   const buttonLabel = action.config?.buttonText || "Download Now";
+      
+    //   // If no valid URL is found, log a warning and exit
+    //   if (!redirectUrl || !redirectUrl.startsWith('http')) {
+    //       console.warn(`⚠️ No valid redirect URL found for action type: ${action.type}`);
+    //       return { success: false, error: `Missing URL for ${action.type}` };
+    //   }
+      
+    //   console.log(`→ Sending ${action.type} link:`, redirectUrl);
 
-      console.log("✅ Redirect link sent");
-      return { success: true, completed: true };
-    }
+    //   await sendFlowMessage({
+    //     recipient: { id: senderId },
+    //     flowNode: {
+    //       type: "button",
+    //       message: messageText, 
+    //       buttons: [
+    //         {
+    //           type: "web_url",
+    //           title: buttonLabel,
+    //           url: redirectUrl,
+    //         },
+    //       ],
+    //     },
+    //     pageAccessToken,
+    //     fbPageId,
+    //   });
+
+    //   console.log(`✅ ${action.type} link sent`);
+    //   return { success: true, completed: true };
+    // }
 
     case "downloadFile": {
-      
-      // Use the redirectUrl from either action type's config
-      const redirectUrl = action.config?.redirectUrl || action.config?.downloadFile?.url || "https://example.com";
-      const messageText = action.config?.message || "Click below to download:";
-      const buttonLabel = action.config?.buttonText || "Download Now";
-      
-      // If no valid URL is found, log a warning and exit
-      if (!redirectUrl || !redirectUrl.startsWith('http')) {
-          console.warn(`⚠️ No valid redirect URL found for action type: ${action.type}`);
-          return { success: false, error: `Missing URL for ${action.type}` };
-      }
-      
-      console.log(`→ Sending ${action.type} link:`, redirectUrl);
+  // ✅ web_url button already handled download
+  console.log("ℹ️ Download button clicked. No message sent.");
+  return { success: true, completed: true };
+}
 
-      await sendFlowMessage({
-        recipient: { id: senderId },
-        flowNode: {
-          type: "button",
-          message: messageText, 
-          buttons: [
-            {
-              type: "web_url",
-              title: buttonLabel,
-              url: redirectUrl,
-            },
-          ],
-        },
-        pageAccessToken,
-        fbPageId,
-      });
-
-      console.log(`✅ ${action.type} link sent`);
-      return { success: true, completed: true };
-    }
 
   case "quickReply": {
       // ✅ NESTED QUICK REPLY (MODIFIED TO BUTTONS)
