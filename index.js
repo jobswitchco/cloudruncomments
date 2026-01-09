@@ -1520,6 +1520,8 @@ app.post("/pubsub-messaging", async (req, res) => {
     await connectMongo();
 
     const entries = envelope?.body?.entry || [];
+    const envelopeBody = envelope?.body || [];
+    console.log('envelopeBody : ', envelopeBody);
     if (!entries.length) {
       console.log("ℹ️ No entries");
       return res.status(204).send();
