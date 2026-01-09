@@ -930,7 +930,7 @@ async function handleTextMessage(event, businessId) {
   // 2️⃣ GATE 1: Resolve creator (businessId → user)
   // =========================================================
   const creator = await User.findOne({ igUserId: businessId })
-    .select("_id")
+    .select("_id igUserId")
     .lean();
 
   if (!creator) {
@@ -1520,16 +1520,12 @@ app.post("/pubsub-messaging", async (req, res) => {
     await connectMongo();
 
     const entries = envelope?.body?.entry || [];
-    const envelopeBody = envelope?.body || [];
-    console.log('envelopeBody : ', envelopeBody);
     if (!entries.length) {
       console.log("ℹ️ No entries");
       return res.status(204).send();
     }
 
     for (const entry of entries) {
-      console.log('entry : ', entry);
-      console.log('Recipient : ', entry?.messaging[0].recipient);
       // ✅ EXTRACT BUSINESS ID (Page ID)
       // This is crucial for DM triggers to know WHICH business received the message
       const businessId = entry.id;
