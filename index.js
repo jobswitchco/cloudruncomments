@@ -2089,11 +2089,29 @@ async function executeAction({
       }
 
       // LIMITATION: Slice to 3 buttons max for Button Template
-      const buttonPayloads = nestedOptions.slice(0, 3).map((option) => ({
-        type: "postback",
-        title: (option.text || "Option").toString().slice(0, 20),
-        payload: `QR_NESTED_${parentNodeId}_${option.id}`,
-      }));
+    const buttonPayloads = nestedOptions.slice(0, 3).map((option) => {
+  const action = option.actions?.[0];
+
+  // ✅ Nested redirect / download → web_url
+  if (
+    action &&
+    (action.type === "redirectLink" || action.type === "downloadFile")
+  ) {
+    return {
+      type: "web_url",
+      title: (option.text || "Open").toString().slice(0, 20),
+      url: action.config?.redirectUrl,
+    };
+  }
+
+  // ❌ Everything else → postback
+  return {
+    type: "postback",
+    title: (option.text || "Option").toString().slice(0, 20),
+    payload: `QR_NESTED_${parentNodeId}_${option.id}`,
+  };
+});
+
 
       console.log("📤 Sending nested buttons to user");
 
