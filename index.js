@@ -1526,6 +1526,7 @@ app.post("/pubsub-messaging", async (req, res) => {
     }
 
     for (const entry of entries) {
+      console.log('entry : ', entry);
       // ✅ EXTRACT BUSINESS ID (Page ID)
       // This is crucial for DM triggers to know WHICH business received the message
       const businessId = entry.id;
