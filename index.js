@@ -1133,6 +1133,15 @@ app.post("/pubsub", async (req, res) => {
     });
     continue;
   }
+
+    if (String(c.fromUserId) === String(c.pageId)) {
+    console.log("🛑 Skipping creator's own comment", {
+      commentId: c.commentId,
+      text: c.text?.substring(0, 50),
+    });
+    continue;
+  }
+  
       // ============================================================================
       // STEP 1: Find existing post-specific automation
       // ============================================================================
@@ -1246,9 +1255,14 @@ app.post("/pubsub", async (req, res) => {
         .filter(Boolean);
 
       // Smart keyword match
-      const matched =
-        normalizedKeywords.length === 0 ||
-        keywordMatch(normalizedComment, normalizedKeywords);
+      // const matched =
+      //   normalizedKeywords.length === 0 ||
+      //   keywordMatch(normalizedComment, normalizedKeywords);
+
+        const matched =
+  normalizedKeywords.length > 0 &&
+  keywordMatch(normalizedComment, normalizedKeywords);
+
 
       if (!matched) {
         console.log("ℹ️ No keyword match for comment:", {
