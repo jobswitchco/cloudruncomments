@@ -69,11 +69,10 @@ export async function publishConversationCreated({ creatorId, conversation }) {
       },
     };
 
-    const res = await axios.post(
-      "http://redis-bridge-service:3000/publish/conversation-created",
+
+    const res = await axios.post(`${REALTIME_URL}/publish/conversation-created`,
       payload,
-      { timeout: 3000 }
-    );
+       { timeout: 3000, proxy: false });
 
     if (res.status !== 200) {
       console.error("❌ Failed to publish conversation:created");
