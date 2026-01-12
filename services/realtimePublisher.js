@@ -10,7 +10,7 @@ export async function publishInboxMessageHTTP({
   conversation
 }) {
   try {
-    console.log("Publishing to:", REALTIME_URL);
+    // console.log("Publishing to:", REALTIME_URL); // Optional: reduce noise
 
     await axios.post(`${REALTIME_URL}/publish/inbox`, {
       creatorId,
@@ -48,27 +48,14 @@ export async function publishConversationUpdate({
  */
 export async function publishConversationCreated({ creatorId, conversation }) {
   try {
+    // 🔥 FIX: Do not manually destruct/reconstruct the object here.
+    // conversationDiscovery.js already formats this object with the full 'participant' details.
+    // We just pass it through to the bridge.
+
     const payload = {
       creatorId: String(creatorId),
-      conversation: {
-        _id: conversation._id.toString(),
-        platform: conversation.platform,
-        igConversationId: conversation.igConversationId,
-        participantId: conversation.participantId.toString(),
-        participant: conversation.participant, // Include populated participant data
-        label: conversation.label,
-        labelSource: conversation.labelSource,
-        isBlocked: conversation.isBlocked,
-        lastMessage: conversation.lastMessage,
-        unreadCount: conversation.unreadCount,
-        lastActivityAt: conversation.lastActivityAt,
-        lastParticipantMessageAt: conversation.lastParticipantMessageAt || null,
-        canReply: conversation.canReply,
-        createdAt: conversation.createdAt,
-        updatedAt: conversation.updatedAt,
-      },
+      conversation: conversation 
     };
-
 
     const res = await axios.post(`${REALTIME_URL}/publish/conversation-created`,
       payload,

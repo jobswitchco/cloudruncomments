@@ -138,8 +138,8 @@ export async function findOrCreateConversationByParticipant({
       creatorId: creatorId,
       conversation: {
         ...conversation.toObject(),
-        participant: participant, // Include participant data
-        canReply: false, // New conversation - no message from them yet
+      participant: participant.toObject ? participant.toObject() : participant, 
+        canReply: false,
       },
     });
 
