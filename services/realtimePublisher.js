@@ -42,3 +42,45 @@ export async function publishConversationUpdate({
     console.error("❌ conversation update publish failed", e.message);
   }
 }
+
+/**
+ * 🆕 Publish new conversation creation to creator's room
+ */
+export async function publishConversationCreated({ creatorId, conversation }) {
+  try {
+    const payload = {
+      creatorId: String(creatorId),
+      conversation: {
+        _id: conversation._id.toString(),
+        platform: conversation.platform,
+        igConversationId: conversation.igConversationId,
+        participantId: conversation.participantId.toString(),
+        participant: conversation.participant, // Include populated participant data
+        label: conversation.label,
+        labelSource: conversation.labelSource,
+        isBlocked: conversation.isBlocked,
+        lastMessage: conversation.lastMessage,
+        unreadCount: conversation.unreadCount,
+        lastActivityAt: conversation.lastActivityAt,
+        lastParticipantMessageAt: conversation.lastParticipantMessageAt || null,
+        canReply: conversation.canReply,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+      },
+    };
+
+    const res = await axios.post(
+      "http://redis-bridge-service:3000/publish/conversation-created",
+      payload,
+      { timeout: 3000 }
+    );
+
+    if (res.status !== 200) {
+      console.error("❌ Failed to publish conversation:created");
+    } else {
+      console.log("✅ Published conversation:created to creator room");
+    }
+  } catch (err) {
+    console.error("❌ publishConversationCreated error:", err.message);
+  }
+}

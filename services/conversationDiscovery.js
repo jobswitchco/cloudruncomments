@@ -4,6 +4,7 @@ import Conversation from "../models/Conversation.js";
 import Participant from "../models/Participant.js";
 import Message from "../models/Message.js";
 import instagramService from "./instagramService.js";
+import { publishConversationCreated } from "./realtimePublisher.js";
 
 const GRAPH_API_BASE = "https://graph.facebook.com/v24.0";
 
@@ -118,6 +119,7 @@ export async function findOrCreateConversationByParticipant({
     });
 
     console.log("✅ Conversation created:", conversation._id);
+    await conversation.populate('participantId');
 
     // STEP 7: Save all fetched messages
     console.log("💾 Saving messages to database...");
@@ -130,6 +132,18 @@ export async function findOrCreateConversationByParticipant({
     });
 
     console.log(`✅ Saved ${savedMessages.length} messages`);
+
+     // 🔥 NEW: Publish to Redis so frontend gets the new conversation
+    await publishConversationCreated({
+      creatorId: creatorId,
+      conversation: {
+        ...conversation.toObject(),
+        participant: participant, // Include participant data
+        canReply: false, // New conversation - no message from them yet
+      },
+    });
+
+    console.log("✅ Published new conversation to Redis");
 
     return {
       conversation,
