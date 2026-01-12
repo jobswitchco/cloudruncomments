@@ -13,6 +13,7 @@ import { persistInboxMessage } from "./services/inboxPersistence.js";
 import { publishInboxMessageHTTP, publishConversationUpdate } from "./services/realtimePublisher.js";
 import levenshtein from "fast-levenshtein";
 import agenda from "./services/agenda.js";
+import { findOrCreateConversationByParticipant } from "./services/conversationDiscovery.js";
 
 
 const app = express();
@@ -619,22 +620,21 @@ async function startDirectFlow({
 
 // async function handleTextMessage(event, businessId) {
 //   const senderId = event.sender?.id;
-//   const messageId = event.message?.mid; // Message ID from Meta
+//   const messageId = event.message?.mid;
 
-//   // --- NEW: IGNORE ECHOES ---
-//   if (event.message?.is_echo) {
-//     return;
-//   }
+//   // =========================================================
+//   // 0️⃣ Ignore invalid / echo messages
+//   // =========================================================
+//   if (!senderId || !messageId) return;
+//   if (event.message?.is_echo) return;
 
-//   // 🔥 FIX 1: Use Meta timestamp, NOT server time
 //   const createdAtPlatform = event.timestamp
 //     ? new Date(event.timestamp)
 //     : new Date();
 
-//   /* =========================================================
-//      🔥 FIX 2: NORMALIZE MESSAGE (TEXT / REEL / ATTACHMENT)
-//      ========================================================= */
-
+//   // =========================================================
+//   // 1️⃣ Normalize incoming message (TEXT / MEDIA / SYSTEM)
+//   // =========================================================
 //   let type = "text";
 //   let text = event.message?.text || null;
 //   let mediaUrl = null;
@@ -643,245 +643,177 @@ async function startDirectFlow({
 
 //   const attachment = event.message?.attachments?.[0];
 
-//   // Image
 //   if (attachment?.type === "image") {
 //     type = "image";
 //     mediaType = "image";
 //     mediaUrl = attachment.payload?.url || null;
-//   }
-//   // Video
-//   else if (attachment?.type === "video") {
+//   } else if (attachment?.type === "video") {
 //     type = "video";
 //     mediaType = "video";
 //     mediaUrl = attachment.payload?.url || null;
-//   }
-//   // Unsupported (reel / post / story share)
-//   else if (event.message?.is_unsupported) {
+//   } else if (event.message?.is_unsupported) {
 //     type = "system";
-//     text = "Shared a reel";
-//     action = {
-//       label: "View on Instagram",
-//       url: "https://www.instagram.com/direct/inbox/",
-//     };
-//   }
-//   // Any other attachment without text
-//   else if (!text) {
+//     text = "Shared unsupported content";
+//   } else if (!text) {
 //     type = "system";
 //     text = "Shared an attachment";
 //   }
 
-//   console.log("💬 Incoming message:", {
-//     senderId,
-//     type,
-//     text,
-//     mediaUrl,
-//     createdAtPlatform,
-//   });
-
-//   /* =========================================================
-//      1️⃣ Resolve creator from business IG ID
-//      ========================================================= */
-
-//   const creator = await User.findOne({ igUserId: businessId })
-//     .select("_id")
-//     .lean();
-
-//   if (creator) {
-//     try {
-//       const { conversation, message } = await persistInboxMessage({
-//         creatorId: creator._id,
-//         businessIgUserId: businessId,
-//         senderIgUserId: senderId,
-//         igMessageId: messageId,
-
-//         // 🔥 pass normalized fields
-//         type,
-//         text,
-//         mediaUrl,
-//         mediaType,
-//         action,
-
-//         createdAt: createdAtPlatform,
-//       });
-
-//       /* =========================================================
-//          2️⃣ Realtime publish (SAFE FOR ALL MESSAGE TYPES)
-//          ========================================================= */
-
-// await publishInboxMessageHTTP({
-//   creatorId: creator._id.toString(),
-//   conversationId: conversation._id.toString(),
-
-//   // 1️⃣ Message payload (unchanged)
-//   message: {
-//     _id: message._id.toString(),
-
-//     sender: message.sender,
-//     senderType: message.senderType,
-//     senderTypeRef: message.senderTypeRef,
-
-//     type: message.type,
-//     text: message.text,
-//     mediaUrl: message.mediaUrl,
-//     mediaType: message.mediaType,
-//     action: message.action,
-
-//     createdAtPlatform: message.createdAtPlatform,
-//     isRead: message.isRead,
-//   },
-
-//   // 2️⃣ 🔥 AUTHORITATIVE CONVERSATION SNAPSHOT
-//   conversation: {
-//     unreadCount: conversation.unreadCount,
-//     lastMessage: conversation.lastMessage,
-//     lastActivityAt: conversation.lastActivityAt,
-//     lastParticipantMessageAt: conversation.lastParticipantMessageAt
-//   },
-// });
-
-
-//   await publishConversationUpdate({
-//         creatorId: creator._id.toString(),
-//         conversationId: conversation._id.toString(),
-//         update: {
-//           lastMessage: conversation.lastMessage,
-//           lastActivityAt: conversation.lastActivityAt,
-//           unreadCount: conversation.unreadCount,
-//     lastParticipantMessageAt: conversation.lastParticipantMessageAt
-
-//         }
-//       });
-
-//     } catch (e) {
-//       console.error("❌ Inbox persistence failed:", e.message);
-//     }
-//   }
-
-//   /* =========================================================
-//      Existing logic BELOW — UNCHANGED
-//      ========================================================= */
-
 //   const normalizedText = normalize(text || "");
 
-//   // ========================================================================
-//   // PATH A: EXISTING FLOW (User is responding to a Comment->Private Reply)
-//   // ========================================================================
-//   const conversation = await ConversationState.findOne({
+//   // =========================================================
+//   // 2️⃣ GATE 1: Resolve creator (businessId → user)
+//   // =========================================================
+//   const creator = await User.findOne({ igUserId: businessId })
+//     .select("_id igUserId")
+//     .lean();
+
+//   if (!creator) {
+//     console.log("ℹ️ No creator found for businessId:", businessId);
+//     return;
+//   }
+
+//   // =========================================================
+//   // 3️⃣ Inbox persistence (NON-BLOCKING, ALWAYS SAFE)
+//   // =========================================================
+//   try {
+//     const { conversation, message } = await persistInboxMessage({
+//       creatorId: creator._id,
+//       businessIgUserId: businessId,
+//       senderIgUserId: senderId,
+//       igMessageId: messageId,
+//       type,
+//       text,
+//       mediaUrl,
+//       mediaType,
+//       action,
+//       createdAt: createdAtPlatform,
+//     });
+
+//     await publishInboxMessageHTTP({
+//       creatorId: creator._id.toString(),
+//       conversationId: conversation._id.toString(),
+//       message: {
+//         _id: message._id.toString(),
+//         sender: message.sender,
+//         senderType: message.senderType,
+//         senderTypeRef: message.senderTypeRef,
+//         type: message.type,
+//         text: message.text,
+//         mediaUrl: message.mediaUrl,
+//         mediaType: message.mediaType,
+//         action: message.action,
+//         createdAtPlatform: message.createdAtPlatform,
+//         isRead: message.isRead,
+//       },
+//       conversation: {
+//         unreadCount: conversation.unreadCount,
+//         lastMessage: conversation.lastMessage,
+//         lastActivityAt: conversation.lastActivityAt,
+//         lastParticipantMessageAt:
+//           conversation.lastParticipantMessageAt,
+//       },
+//     });
+
+//     await publishConversationUpdate({
+//       creatorId: creator._id.toString(),
+//       conversationId: conversation._id.toString(),
+//       update: {
+//         lastMessage: conversation.lastMessage,
+//         lastActivityAt: conversation.lastActivityAt,
+//         unreadCount: conversation.unreadCount,
+//         lastParticipantMessageAt:
+//           conversation.lastParticipantMessageAt,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("❌ Inbox persistence failed:", err.message);
+//   }
+
+//   // =========================================================
+//   // 4️⃣ PATH A: Existing active conversation → continue flow
+//   // =========================================================
+//   const activeConversation = await ConversationState.findOne({
 //     igUserId: senderId,
 //     status: "active",
 //     expiresAt: { $gt: new Date() },
 //   }).sort({ startedAt: -1 });
 
-//   if (conversation) {
-//     if (conversation.currentFlowId === "awaiting_user_response") {
-//       console.log("✅ User responded to initial message, 24hr window now open");
-
-//       const creds = await ensureFreshPageTokenForUser(conversation.userId);
-//       const accessToken = creds.fbPageAccessToken;
-//       const fbPageId = creds.fbPageId;
-
-//       const initialNode =
-//         conversation.flowConfig.initial || conversation.flowConfig[0];
-
-//       try {
-//         await sendFlowMessage({
-//           recipient: { id: String(senderId) },
-//           flowNode: initialNode,
-//           pageAccessToken: accessToken,
-//           fbPageId: fbPageId,
-//         });
-
-//         conversation.currentFlowId = String(initialNode.id || "initial");
-//         conversation.addHistory({
-//           flowId: "initial_response",
-//           flowName: "USER_RESPONDED_TO_DM",
-//           messageSent: initialNode.message,
-//           userReply: text,
-//         });
-//         await conversation.save();
-
-//         console.log("✅ Quick replies sent after user text response");
-//       } catch (err) {
-//         console.error("❌ Failed to send quick replies:", err.message);
-//         conversation.markError(err);
-//         await conversation.save();
-//       }
-//     }
+//   if (activeConversation) {
+//     // Flow continuation handled elsewhere
+//     return;
 //   }
 
-//   // ========================================================================
-//   // PATH B: NEW TRIGGER (User sends a DM Keyword like "Coach", "Link")
-//   // ========================================================================
-//   else {
-//     console.log(
-//       `🔍 No active conversation. Checking keywords for Business ID: ${businessId}`
-//     );
+//   // =========================================================
+//   // 5️⃣ GATE 2: Is ANY autodm automation active for this page?
+//   // =========================================================
+//   const hasAutoDM = await Automation.exists({
+//     igUserId: businessId,
+//     postType: "autodm",
+//     platform: "instagram",
+//     status: "active",
+//   });
 
-//     if (!businessId) {
-//       console.warn("⚠️ Cannot process DM trigger: Missing businessId");
-//       return;
-//     }
-
-//     let user = await User.findOne({ igUserId: businessId }).lean();
-//     const keywordRegex = new RegExp(
-//       `^${escapeRegex(normalizedText)}$`,
-//       "i"
-//     );
-
-//     const automation = await Automation.findOne({
-//       userId: user._id,
-//       postType: "autodm",
-//       platform: "instagram",
-//       status: "active",
-//       keywords: { $in: [keywordRegex] },
-//     }).lean();
-
-//     if (!automation) {
-//       console.log(`ℹ️ No automation found for keyword: "${normalizedText}"`);
-//       return;
-//     }
-
-//     console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
-
-//     try {
-//       await ActionLock.create({
-//         automationId: automation._id,
-//         postType: "autodm",
-//         postId: "automDM12345",
-//         igUserId: senderId,
-//         commentId: messageId,
-//         channel: "private",
-//         state: "sent",
-//         reservedAt: new Date(),
-//         sentAt: new Date(),
-//       });
-//     } catch (err) {
-//       if (err.code === 11000) {
-//         console.log("⚠️ Duplicate DM webhook event detected. Skipping.");
-//         return;
-//       }
-//       console.error("ActionLock error", err);
-//     }
-
-//     const creds = await ensureFreshPageTokenForUser(user._id);
-
-//     if (!creds.fbPageAccessToken) {
-//       console.error("❌ Could not get access token for user");
-//       return;
-//     }
-
-//     await startDirectFlow({
-//       automation,
-//       igUserId: senderId,
-//       pageAccessToken: creds.fbPageAccessToken,
-//       fbPageId: creds.fbPageId || businessId,
-//       messageId,
-//     });
+//   if (!hasAutoDM) {
+//     console.log("ℹ️ No autodm automations for business:", businessId);
+//     return;
 //   }
+
+//   // =========================================================
+//   // 6️⃣ GATE 3: Keyword → Automation match
+//   // =========================================================
+//   const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, "i");
+
+//   const automation = await Automation.findOne({
+//     igUserId: businessId,
+//     postType: "autodm",
+//     platform: "instagram",
+//     status: "active",
+//     keywords: { $in: [keywordRegex] },
+//   }).lean();
+
+//   if (!automation) {
+//     console.log("ℹ️ No keyword match for text:", normalizedText);
+//     return;
+//   }
+
+//   // =========================================================
+//   // 7️⃣ GATE 4 (CRITICAL): Reserve ActionLock FIRST
+//   // =========================================================
+//   const { proceed } = await reserveAction({
+//     automationId: automation._id,
+//     postId: "autodm",
+//     igUserId: senderId,
+//     commentText: text || "",
+//     commentId: messageId,
+//     channel: "private",
+//   });
+
+//   if (!proceed) {
+//     console.log("⚠️ Duplicate DM trigger blocked by ActionLock");
+//     return;
+//   }
+
+//   // =========================================================
+//   // 8️⃣ Execute automation (SAFE TO RUN ONCE)
+//   // =========================================================
+//   const creds = await ensureFreshPageTokenForUser(automation.userId);
+
+//   if (!creds.fbPageAccessToken) {
+//     console.error("❌ Missing page access token");
+//     return;
+//   }
+
+//   await startDirectFlow({
+//     automation,
+//     igUserId: senderId,
+//     pageAccessToken: creds.fbPageAccessToken,
+//     fbPageId: creds.fbPageId || businessId,
+//     messageId,
+//   });
+
+//   console.log("🚀 AutoDM flow started safely:", automation._id);
 // }
-
-
-// ========== PUB/SUB ENDPOINT: COMMENTS ==========
 
 async function handleTextMessage(event, businessId) {
   const senderId = event.sender?.id;
@@ -927,7 +859,7 @@ async function handleTextMessage(event, businessId) {
   const normalizedText = normalize(text || "");
 
   // =========================================================
-  // 2️⃣ GATE 1: Resolve creator (businessId → user)
+  // 2️⃣ Resolve creator (businessId → user)
   // =========================================================
   const creator = await User.findOne({ igUserId: businessId })
     .select("_id igUserId")
@@ -939,10 +871,13 @@ async function handleTextMessage(event, businessId) {
   }
 
   // =========================================================
-  // 3️⃣ Inbox persistence (NON-BLOCKING, ALWAYS SAFE)
+  // 3️⃣ NEW: Try to find existing conversation OR create it
   // =========================================================
+  let conversationData;
+  
   try {
-    const { conversation, message } = await persistInboxMessage({
+    // First check if conversation exists via persistInboxMessage
+    const existingCheck = await persistInboxMessage({
       creatorId: creator._id,
       businessIgUserId: businessId,
       senderIgUserId: senderId,
@@ -953,7 +888,59 @@ async function handleTextMessage(event, businessId) {
       mediaType,
       action,
       createdAt: createdAtPlatform,
+      skipIfNoConversation: true, // NEW FLAG
     });
+
+    if (existingCheck) {
+      // Conversation exists, use it
+      conversationData = existingCheck;
+    } else {
+      // Conversation doesn't exist, fetch and create it
+      console.log("🆕 No conversation found, fetching from Meta...");
+      
+      const creds = await ensureFreshPageTokenForUser(creator._id);
+      
+      if (!creds.fbPageAccessToken) {
+        console.error("❌ Cannot fetch conversation: no access token");
+        return;
+      }
+
+      const discoveryResult = await findOrCreateConversationByParticipant({
+        creatorId: creator._id,
+        participantIgUserId: senderId,
+        businessIgUserId: businessId,
+        pageAccessToken: creds.fbPageAccessToken,
+      });
+
+      console.log("✅ Conversation discovered and created");
+
+      // Now save the incoming message
+      const { conversation, message } = await persistInboxMessage({
+        creatorId: creator._id,
+        businessIgUserId: businessId,
+        senderIgUserId: senderId,
+        igMessageId: messageId,
+        type,
+        text,
+        mediaUrl,
+        mediaType,
+        action,
+        createdAt: createdAtPlatform,
+      });
+
+      conversationData = { conversation, message };
+    }
+
+  } catch (err) {
+    console.error("❌ Conversation handling failed:", err.message);
+    return;
+  }
+
+  // =========================================================
+  // 4️⃣ Realtime publish
+  // =========================================================
+  try {
+    const { conversation, message } = conversationData;
 
     await publishInboxMessageHTTP({
       creatorId: creator._id.toString(),
@@ -975,8 +962,7 @@ async function handleTextMessage(event, businessId) {
         unreadCount: conversation.unreadCount,
         lastMessage: conversation.lastMessage,
         lastActivityAt: conversation.lastActivityAt,
-        lastParticipantMessageAt:
-          conversation.lastParticipantMessageAt,
+        lastParticipantMessageAt: conversation.lastParticipantMessageAt,
       },
     });
 
@@ -987,17 +973,18 @@ async function handleTextMessage(event, businessId) {
         lastMessage: conversation.lastMessage,
         lastActivityAt: conversation.lastActivityAt,
         unreadCount: conversation.unreadCount,
-        lastParticipantMessageAt:
-          conversation.lastParticipantMessageAt,
+        lastParticipantMessageAt: conversation.lastParticipantMessageAt,
       },
     });
   } catch (err) {
-    console.error("❌ Inbox persistence failed:", err.message);
+    console.error("❌ Redis publish failed:", err.message);
   }
 
   // =========================================================
-  // 4️⃣ PATH A: Existing active conversation → continue flow
+  // 5️⃣ Continue with existing automation logic
   // =========================================================
+  
+  // Check for active conversation (existing flow logic)
   const activeConversation = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
@@ -1009,9 +996,7 @@ async function handleTextMessage(event, businessId) {
     return;
   }
 
-  // =========================================================
-  // 5️⃣ GATE 2: Is ANY autodm automation active for this page?
-  // =========================================================
+  // Check for autodm automations (existing logic)
   const hasAutoDM = await Automation.exists({
     igUserId: businessId,
     postType: "autodm",
@@ -1024,9 +1009,7 @@ async function handleTextMessage(event, businessId) {
     return;
   }
 
-  // =========================================================
-  // 6️⃣ GATE 3: Keyword → Automation match
-  // =========================================================
+  // Keyword matching logic (existing)
   const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, "i");
 
   const automation = await Automation.findOne({
@@ -1042,9 +1025,7 @@ async function handleTextMessage(event, businessId) {
     return;
   }
 
-  // =========================================================
-  // 7️⃣ GATE 4 (CRITICAL): Reserve ActionLock FIRST
-  // =========================================================
+  // ActionLock and flow execution (existing logic)
   const { proceed } = await reserveAction({
     automationId: automation._id,
     postId: "autodm",
@@ -1059,9 +1040,6 @@ async function handleTextMessage(event, businessId) {
     return;
   }
 
-  // =========================================================
-  // 8️⃣ Execute automation (SAFE TO RUN ONCE)
-  // =========================================================
   const creds = await ensureFreshPageTokenForUser(automation.userId);
 
   if (!creds.fbPageAccessToken) {
