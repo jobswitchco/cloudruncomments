@@ -16,47 +16,49 @@ export async function findOrCreateConversationByParticipant({
   participantIgUserId,
   businessIgUserId,
   pageAccessToken,
-  fbPageId
+  fbPageId,
 }) {
   try {
     console.log("🔍 Searching for conversation with participant:", participantIgUserId);
 
-    // STEP 1: Check if participant already has a conversation with this creator
-    const existingParticipant = await Participant.findOne({
+    // ✅ ALWAYS use standardized igConversationId format
+    const igConversationId = `igdm:${businessIgUserId}:${participantIgUserId}`;
+
+    // STEP 1: Check if conversation already exists with this exact ID
+    let conversation = await Conversation.findOne({
+      creatorId: creatorId,
       platform: "instagram",
-      igUserId: participantIgUserId,
+      igConversationId: igConversationId,
     });
 
-    if (existingParticipant) {
-      const existingConversation = await Conversation.findOne({
-        creatorId: creatorId,
-        participantId: existingParticipant._id,
-      });
-
-      if (existingConversation) {
-        console.log("✅ Found existing conversation:", existingConversation.igConversationId);
-        return {
-          conversation: existingConversation,
-          participant: existingParticipant,
-          isNew: false,
-        };
-      }
+    if (conversation) {
+      console.log("✅ Found existing conversation:", conversation._id);
+      
+      const participant = await Participant.findById(conversation.participantId);
+      
+      return {
+        conversation: conversation,
+        participant: participant,
+        isNew: false,
+      };
     }
 
-    // STEP 2: Fetch conversation from Meta API
-    console.log("📡 Fetching conversation from Meta API...");
-    const igConversationId = await findConversationIdFromMeta({
+    // STEP 2: No conversation exists - need to fetch from Meta and create
+
+    // STEP 2a: Find the Meta conversation ID (needed for fetching messages)
+    console.log("📡 Finding conversation in Meta API...");
+    const metaConversationId = await findConversationIdFromMeta({
       businessIgUserId,
       participantIgUserId,
       pageAccessToken,
-      fbPageId
+      fbPageId,
     });
 
-    if (!igConversationId) {
+    if (!metaConversationId) {
       throw new Error("Could not find conversation ID from Meta");
     }
 
-    console.log("✅ Found igConversationId:", igConversationId);
+    console.log("✅ Found Meta conversation ID:", metaConversationId);
 
     // STEP 3: Fetch participant profile from Meta
     console.log("👤 Fetching participant profile...");
@@ -81,26 +83,29 @@ export async function findOrCreateConversationByParticipant({
 
     console.log("✅ Participant created/updated:", participant._id);
 
-    // STEP 5: Fetch last 25 messages from Meta
+    // STEP 5: Fetch last 25 messages from Meta using the Meta conversation ID
     console.log("📥 Fetching last 25 messages...");
     const { messages: fetchedMessages, paging } =
       await instagramService.fetchLatestMessages({
-        igConversationId,
+        igConversationId: metaConversationId, // ✅ Use Meta ID for API calls
         accessToken: pageAccessToken,
         limit: 25,
       });
 
     console.log(`✅ Fetched ${fetchedMessages.length} messages`);
 
-    // STEP 6: Create conversation record
+    // STEP 6: Create conversation record with standardized ID
     const lastMessage = buildLastMessageSnapshot(
       fetchedMessages[0],
       businessIgUserId
     );
 
-    const conversation = await Conversation.create({
+    // ✅ Use standardized igConversationId format for DB lookups
+    // ✅ Store Meta's conversation ID in metaThreadId for API calls
+    conversation = await Conversation.create({
       platform: "instagram",
-      igConversationId: igConversationId,
+      igConversationId: igConversationId,     // igdm:17841402138259768:2226812364460274
+      metaThreadId: metaConversationId,       // aWdfZAG06MTpJR01lc3NhZA2VU...
       creatorId: creatorId,
       participantId: participant._id,
       lastMessage: lastMessage,
@@ -140,12 +145,13 @@ export async function findOrCreateConversationByParticipant({
 
 /**
  * Find the Instagram Conversation ID by searching through the creator's conversations
+ * Returns the Meta conversation ID (needed for API calls to fetch messages)
  */
 async function findConversationIdFromMeta({
   businessIgUserId,
   participantIgUserId,
   pageAccessToken,
-  fbPageId
+  fbPageId,
 }) {
   try {
     let after = null;
@@ -154,7 +160,7 @@ async function findConversationIdFromMeta({
 
     while (attempts < maxAttempts) {
       const { data, paging } = await instagramService.fetchConversations({
-        pageId: fbPageId,
+        pageId: fbPageId, // ✅ Use FB Page ID
         accessToken: pageAccessToken,
         limit: 10,
         after: after,
@@ -170,8 +176,8 @@ async function findConversationIdFromMeta({
         );
 
         if (hasParticipant) {
-          console.log("✅ Found conversation:", conv.id);
-          return conv.id;
+          console.log("✅ Found Meta conversation ID:", conv.id);
+          return conv.id; // Return the Meta conversation ID
         }
       }
 
