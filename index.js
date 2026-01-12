@@ -910,6 +910,7 @@ async function handleTextMessage(event, businessId) {
         participantIgUserId: senderId,
         businessIgUserId: businessId,
         pageAccessToken: creds.fbPageAccessToken,
+        fbPageId: creds.fbPageId
       });
 
       console.log("✅ Conversation discovered and created");

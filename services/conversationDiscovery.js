@@ -16,6 +16,7 @@ export async function findOrCreateConversationByParticipant({
   participantIgUserId,
   businessIgUserId,
   pageAccessToken,
+  fbPageId
 }) {
   try {
     console.log("🔍 Searching for conversation with participant:", participantIgUserId);
@@ -48,6 +49,7 @@ export async function findOrCreateConversationByParticipant({
       businessIgUserId,
       participantIgUserId,
       pageAccessToken,
+      fbPageId
     });
 
     if (!igConversationId) {
@@ -143,6 +145,7 @@ async function findConversationIdFromMeta({
   businessIgUserId,
   participantIgUserId,
   pageAccessToken,
+  fbPageId
 }) {
   try {
     let after = null;
@@ -151,7 +154,7 @@ async function findConversationIdFromMeta({
 
     while (attempts < maxAttempts) {
       const { data, paging } = await instagramService.fetchConversations({
-        pageId: businessIgUserId,
+        pageId: fbPageId,
         accessToken: pageAccessToken,
         limit: 10,
         after: after,
