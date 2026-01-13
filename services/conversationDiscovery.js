@@ -101,6 +101,24 @@ export async function findOrCreateConversationByParticipant({
       businessIgUserId
     );
 
+// 🔥 NEW: Calculate unread count and lastParticipantMessageAt
+let unreadCount = 0;
+let lastParticipantMessageAt = null;
+
+for (const msg of fetchedMessages) {
+  const isFromBusiness = msg.from?.id === businessIgUserId;
+  
+  if (!isFromBusiness) {
+    unreadCount++;
+    
+    // Track most recent message from participant
+    const msgTime = new Date(msg.created_time);
+    if (!lastParticipantMessageAt || msgTime > lastParticipantMessageAt) {
+      lastParticipantMessageAt = msgTime;
+    }
+  }
+}
+
     // ✅ Use standardized igConversationId format for DB lookups
     // ✅ Store Meta's conversation ID in metaThreadId for API calls
     conversation = await Conversation.create({
@@ -113,7 +131,8 @@ export async function findOrCreateConversationByParticipant({
       lastActivityAt: new Date(fetchedMessages[0]?.created_time || Date.now()),
       lastSyncedAt: new Date(),
       lastMetaCursor: paging?.cursors?.after || null,
-      unreadCount: 0,
+      unreadCount: unreadCount,
+      lastParticipantMessageAt: lastParticipantMessageAt,
       label: "General",
       labelSource: "auto",
     });
@@ -134,14 +153,17 @@ export async function findOrCreateConversationByParticipant({
     console.log(`✅ Saved ${savedMessages.length} messages`);
 
      // 🔥 NEW: Publish to Redis so frontend gets the new conversation
-    await publishConversationCreated({
-      creatorId: creatorId,
-      conversation: {
-        ...conversation.toObject(),
-      participant: participant.toObject ? participant.toObject() : participant, 
-        canReply: false,
-      },
-    });
+await publishConversationCreated({
+  creatorId: creatorId,
+  conversation: {
+    ...conversation.toObject(),
+    participant: participant.toObject ? participant.toObject() : participant,
+    canReply: lastParticipantMessageAt 
+      ? (Date.now() - new Date(lastParticipantMessageAt).getTime() <= 24 * 60 * 60 * 1000)
+      : false,
+    unreadCount: conversation.unreadCount, // ✅ Make sure this is included
+  },
+});
 
     console.log("✅ Published new conversation to Redis");
 
