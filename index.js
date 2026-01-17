@@ -1486,6 +1486,7 @@ app.post("/pubsub-messaging", async (req, res) => {
   
   try {
     console.log("📨 /pubsub-messaging called");
+    const start = process.hrtime.bigint(); // high-resolution timer
 
     if (PUBSUB_TOKEN) {
       const headerToken = req.get("X-Pubsub-Token");
@@ -1560,6 +1561,10 @@ app.post("/pubsub-messaging", async (req, res) => {
       }
     }
 
+    const end = process.hrtime.bigint();
+const ms = Number(end - start) / 1e6;
+
+console.log(`⏱️ PUBSUB ACK sent in ${ms.toFixed(2)} ms`);
     return res.status(204).send();
   } catch (err) {
     console.error("❌ /pubsub-messaging error", err.message, err.stack);
