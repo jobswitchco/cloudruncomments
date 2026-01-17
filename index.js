@@ -1549,7 +1549,7 @@ app.post("/pubsub-messaging", async (req, res) => {
         if (event.message && !event.message.quick_reply) {
           console.log('Hit Here-3');
           console.log('businessId :', businessId);
-          await handleTextMessage(event, businessId);
+          handleTextMessage(event, businessId);
           continue;
         }
 
